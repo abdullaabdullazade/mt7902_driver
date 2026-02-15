@@ -71,6 +71,7 @@
  */
 #include "precomp.h"
 
+#include "hal_wfsys_reset_mt7961.h"
 #include "hif_pdma.h"
 
 #include <linux/mm.h>
@@ -685,6 +686,58 @@ u_int8_t halSetDriverOwn(IN struct ADAPTER *prAdapter)
 			if (prChipInfo->prDebugOps->showCsrInfo)
 				prChipInfo->prDebugOps->showCsrInfo(prAdapter);
 		}
+
+#if CFG_CHIP_RESET_SUPPORT
+		/* TRUE MCU BYPASS: Force WFSYS hard reset to wake cold MCU.
+		 * When LP_OWN handshake fails, the MCU is likely in a cold/
+		 * dead state. We assert+de-assert the WFSYS reset via CBTOP
+		 * RGU registers to force it to reinitialize, then retry.
+		 */
+		DBGLOG(INIT, WARN,
+		       "Attempting WFSYS hard reset to wake cold MCU...\n");
+
+		/* Assert WFSYS reset */
+		mt7961HalCbtopRguWfRst(prAdapter, TRUE);
+		kalMsleep(50);
+		/* De-assert WFSYS reset */
+		mt7961HalCbtopRguWfRst(prAdapter, FALSE);
+		kalMsleep(100);
+
+		/* Poll until MCU is ready */
+		if (mt7961HalPollWfsysSwInitDone(prAdapter)) {
+			DBGLOG(INIT, INFO,
+			       "MCU woke up after WFSYS reset! "
+			       "Retrying LP_OWN...\n");
+
+			/* Retry LP_OWN handshake */
+			HAL_LP_OWN_CLR(prAdapter, &fgResult);
+			fgResult = FALSE;
+			i = 0;
+			u4CurrTick = kalGetTimeTick();
+			while (1) {
+				HAL_LP_OWN_RD(prAdapter, &fgResult);
+				fgTimeout = ((kalGetTimeTick() - u4CurrTick)
+					> LP_OWN_BACK_TOTAL_DELAY_MS);
+				if (fgResult || fgTimeout)
+					break;
+				if ((i & (LP_OWN_BACK_LOOP_DELAY_MS - 1)) == 0)
+					kalUdelay(LP_OWN_BACK_LOOP_DELAY_MIN_US);
+				i++;
+			}
+			if (fgResult) {
+				prAdapter->fgIsFwOwn = FALSE;
+				fgStatus = TRUE;
+				DBGLOG(INIT, INFO,
+				       "DRIVER OWN success after WFSYS reset!\n");
+			} else {
+				DBGLOG(INIT, ERROR,
+				       "DRIVER OWN still failed after WFSYS reset\n");
+			}
+		} else {
+			DBGLOG(INIT, ERROR,
+			       "WFSYS reset failed — MCU did not wake up\n");
+		}
+#endif
 	}
 
 	KAL_REC_TIME_END();
