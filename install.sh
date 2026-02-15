@@ -190,7 +190,7 @@ install_bt() {
                 best="$d"
             fi
         done
-        [ -z "$best" ] && best=$(ls -d "${base}"/linux-*/drivers/bluetooth 2>/dev/null | sort -V | tail -1)
+        [ -z "$best" ] && best=$(ls -d "${base}"/linux-*/drivers/bluetooth 2>/dev/null | sort -V | head -1)
         [ -z "$best" ] && { fail "No bluetooth source found"; return 1; }
         bt_dir="$best"
         ok "Using $(basename $(dirname $(dirname $bt_dir)))"
