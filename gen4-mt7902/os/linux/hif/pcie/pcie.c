@@ -663,7 +663,7 @@ int mtk_pci_resume(struct pci_dev *pdev)
 	prDebugOps = prGlueInfo->prAdapter->chip_info->prDebugOps;
 
 	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
+
 
 	/* Force MCU wake after deep sleep — some hardware needs
 	 * a power cycle to re-initialize the MCU after suspend.
@@ -672,6 +672,10 @@ int mtk_pci_resume(struct pci_dev *pdev)
 	msleep(10);
 	pci_set_power_state(pdev, PCI_D0);
 	msleep(50);
+
+	/* Restore config space (BARs, MSI, etc.) AFTER power cycle */
+	pci_restore_state(pdev);
+	pci_set_master(pdev);
 
 	/* Disable ASPM L1 to prevent link latency issues */
 	pci_disable_link_state(pdev, PCIE_LINK_STATE_L1);
