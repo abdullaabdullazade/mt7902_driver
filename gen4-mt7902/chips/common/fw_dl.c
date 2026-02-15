@@ -2283,8 +2283,21 @@ uint32_t wlanHarvardFormatDownload(IN struct ADAPTER
 	kalFirmwareImageMapping(prAdapter->prGlueInfo, &prFwBuffer,
 				&u4FwSize, eDlIdx);
 	if (prFwBuffer == NULL) {
-		DBGLOG(INIT, WARN, "FW[%u] load error!\n", eDlIdx);
-		return WLAN_STATUS_FAILURE;
+		/* Firmware may not be available yet during early boot.
+		 * Retry once after a delay to let firmware subsystem
+		 * catch up (e.g. NVMe rootfs, initramfs transition).
+		 */
+		DBGLOG(INIT, WARN,
+		       "FW[%u] load failed, retrying in 500ms...\n",
+		       eDlIdx);
+		kalMsleep(500);
+		kalFirmwareImageMapping(prAdapter->prGlueInfo, &prFwBuffer,
+					&u4FwSize, eDlIdx);
+		if (prFwBuffer == NULL) {
+			DBGLOG(INIT, ERROR,
+			       "FW[%u] load error after retry!\n", eDlIdx);
+			return WLAN_STATUS_FAILURE;
+		}
 	}
 
 	wlanGetHarvardTailerInfo(prAdapter, prFwBuffer, u4FwSize,

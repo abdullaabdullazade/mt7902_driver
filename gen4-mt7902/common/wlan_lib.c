@@ -12828,9 +12828,17 @@ wlanShiftCSI(
 uint32_t wlanWakeUpWiFi(IN struct ADAPTER *prAdapter)
 {
 	u_int8_t fgReady;
+	struct mt66xx_chip_info *prChipInfo;
 
 	if (!prAdapter)
 		return WLAN_STATUS_FAILURE;
+
+	prChipInfo = prAdapter->chip_info;
+	if (!prChipInfo) {
+		DBGLOG(INIT, ERROR,
+		       "wlanWakeUpWiFi: chip_info is NULL!\n");
+		return WLAN_STATUS_FAILURE;
+	}
 
 	HAL_WIFI_FUNC_READY_CHECK(prAdapter, prChipInfo->sw_ready_bits,
 			&fgReady);

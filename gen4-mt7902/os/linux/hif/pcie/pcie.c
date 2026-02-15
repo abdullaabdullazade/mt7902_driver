@@ -416,9 +416,31 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 #else
 	if (pfWlanProbe((void *) pdev,
 		(void *) id->driver_data) != WLAN_STATUS_SUCCESS) {
-		DBGLOG(INIT, INFO, "pfWlanProbe fail!call pfWlanRemove()\n");
+
+		/* First probe failed — power cycle and retry once */
+		DBGLOG(INIT, WARN,
+		       "pfWlanProbe failed, power cycling and retrying...\n");
 		pfWlanRemove();
-		ret = -1;
+
+		/* PCIe power cycle to reset MCU state */
+		pci_set_power_state(pdev, PCI_D3hot);
+		msleep(100);
+		pci_set_power_state(pdev, PCI_D0);
+		msleep(200);
+		pci_restore_state(pdev);
+
+		if (pfWlanProbe((void *) pdev,
+			(void *) id->driver_data) != WLAN_STATUS_SUCCESS) {
+			DBGLOG(INIT, ERROR,
+			       "pfWlanProbe failed after retry!\n");
+			pfWlanRemove();
+			ret = -EPROBE_DEFER;
+		} else {
+			DBGLOG(INIT, INFO,
+			       "pfWlanProbe succeeded on retry!\n");
+			g_fgDriverProbed = TRUE;
+			g_u4DmaMask = prChipInfo->bus_info->u4DmaMask;
+		}
 	} else {
 		g_fgDriverProbed = TRUE;
 		g_u4DmaMask = prChipInfo->bus_info->u4DmaMask;
