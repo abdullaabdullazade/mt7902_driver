@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+*.ko
+*.ko.zst
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+*.order
+*.symvers
+*.tmp_versions/
+.tmp_versions/
+Module.symvers
+modules.order
+.cache.mk

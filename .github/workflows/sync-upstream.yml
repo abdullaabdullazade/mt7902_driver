@@ -1,0 +1,165 @@
+name: Sync Upstream Repos
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if no changes detected'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check WiFi upstream (gen4-mt7902)
+        id: wifi_check
+        run: |
+          UPSTREAM_REPO="https://github.com/hmtheboy154/gen4-mt7902.git"
+          LAST_SHA=""
+          CHANGES_DETECTED=false
+
+          if [ -f .upstream-sync/wifi.sha ]; then
+            LAST_SHA=$(cat .upstream-sync/wifi.sha)
+          fi
+
+          # Get latest commit from upstream
+          LATEST_SHA=$(git ls-remote "$UPSTREAM_REPO" HEAD | awk '{print $1}')
+
+          echo "Last synced WiFi SHA: $LAST_SHA"
+          echo "Latest WiFi SHA: $LATEST_SHA"
+
+          if [ "$LAST_SHA" != "$LATEST_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
+            CHANGES_DETECTED=true
+          fi
+
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          echo "changes=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
+
+      - name: Check Bluetooth upstream (mt7902_temp)
+        id: bt_check
+        run: |
+          UPSTREAM_REPO="https://github.com/OnlineLearningTutorials/mt7902_temp.git"
+          LAST_SHA=""
+          CHANGES_DETECTED=false
+
+          if [ -f .upstream-sync/bt.sha ]; then
+            LAST_SHA=$(cat .upstream-sync/bt.sha)
+          fi
+
+          LATEST_SHA=$(git ls-remote "$UPSTREAM_REPO" HEAD | awk '{print $1}')
+
+          echo "Last synced BT SHA: $LAST_SHA"
+          echo "Latest BT SHA: $LATEST_SHA"
+
+          if [ "$LAST_SHA" != "$LATEST_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
+            CHANGES_DETECTED=true
+          fi
+
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          echo "changes=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
+
+      - name: Sync WiFi driver
+        if: steps.wifi_check.outputs.changes == 'true'
+        run: |
+          echo "📶 Syncing WiFi driver from upstream..."
+
+          # Clone upstream into temp dir
+          git clone --depth 1 https://github.com/hmtheboy154/gen4-mt7902.git /tmp/wifi-upstream
+
+          # Remove old source (keep .git out of it)
+          rm -rf gen4-mt7902/*
+
+          # Copy new source (exclude .git)
+          rsync -av --exclude='.git' /tmp/wifi-upstream/ gen4-mt7902/
+
+          # Update tracking SHA
+          mkdir -p .upstream-sync
+          echo "${{ steps.wifi_check.outputs.latest_sha }}" > .upstream-sync/wifi.sha
+
+          echo "✔ WiFi driver synced"
+
+      - name: Sync Bluetooth driver
+        if: steps.bt_check.outputs.changes == 'true'
+        run: |
+          echo "🔵 Syncing Bluetooth driver from upstream..."
+
+          git clone --depth 1 https://github.com/OnlineLearningTutorials/mt7902_temp.git /tmp/bt-upstream
+
+          rm -rf mt7902_temp/*
+
+          rsync -av --exclude='.git' /tmp/bt-upstream/ mt7902_temp/
+
+          mkdir -p .upstream-sync
+          echo "${{ steps.bt_check.outputs.latest_sha }}" > .upstream-sync/bt.sha
+
+          echo "✔ Bluetooth driver synced"
+
+      - name: Create Pull Request
+        if: steps.wifi_check.outputs.changes == 'true' || steps.bt_check.outputs.changes == 'true'
+        run: |
+          BRANCH="upstream-sync/$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+
+          git add -A
+          
+          # Build commit message
+          MSG="🔄 Upstream sync $(date +%Y-%m-%d)"
+          BODY=""
+
+          if [ "${{ steps.wifi_check.outputs.changes }}" = "true" ]; then
+            MSG="$MSG | WiFi"
+            BODY="${BODY}\n## 📶 WiFi Driver Updated\n- Source: [gen4-mt7902](https://github.com/hmtheboy154/gen4-mt7902)\n- Commit: \`${{ steps.wifi_check.outputs.latest_sha }}\`\n"
+          fi
+
+          if [ "${{ steps.bt_check.outputs.changes }}" = "true" ]; then
+            MSG="$MSG | BT"
+            BODY="${BODY}\n## 🔵 Bluetooth Driver Updated\n- Source: [mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp)\n- Commit: \`${{ steps.bt_check.outputs.latest_sha }}\`\n"
+          fi
+
+          # Check if there are actually file changes
+          if git diff --cached --quiet; then
+            echo "No file changes detected, skipping PR"
+            exit 0
+          fi
+
+          git commit -m "$MSG"
+          git push origin "$BRANCH"
+
+          # Create PR using GitHub CLI
+          echo -e "$BODY" | gh pr create \
+            --title "$MSG" \
+            --body-file /dev/stdin \
+            --base main \
+            --head "$BRANCH" \
+            --label "upstream-sync"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge (direct commit to main)
+        if: (steps.wifi_check.outputs.changes == 'true' || steps.bt_check.outputs.changes == 'true') && github.event.inputs.force_sync != 'true'
+        run: |
+          # If you prefer auto-merge without PR, uncomment below and remove the PR step above
+          # git add -A
+          # git commit -m "🔄 Auto-sync upstream $(date +%Y-%m-%d)" || true
+          # git push origin main
+          echo "PR created. Review and merge manually or set up auto-merge."
