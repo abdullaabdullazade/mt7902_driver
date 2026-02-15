@@ -398,13 +398,24 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
-#if defined(SOC3_0)
-	if ((void *)&mt66xx_driver_data_soc3_0 == (void *)id->driver_data)
-		DBGLOG(INIT, INFO,
-			"[MJ]&mt66xx_driver_data_soc3_0 == id->driver_data\n");
-#endif
+	/* Increase PCIe completion timeout for slow hardware.
+	 * Some BIOS/UEFI sets very aggressive timeouts that
+	 * cause DMA failures on cold boot.
+	 */
+	{
+		u16 devctl2;
 
-	DBGLOG(INIT, INFO, "pci_enable_device done!\n");
+		pcie_capability_read_word(pdev, PCI_EXP_DEVCTL2, &devctl2);
+		devctl2 &= ~PCI_EXP_DEVCTL2_COMP_TIMEOUT;
+		devctl2 |= 0x6; /* Range C: 1s to 3.5s */
+		pcie_capability_write_word(pdev, PCI_EXP_DEVCTL2, devctl2);
+	}
+
+	/* Save PCIe config state for recovery (AER, resume).
+	 * This must be done AFTER power cycle + ASPM disable
+	 * so restore brings the device back to a known-good state.
+	 */
+	pci_save_state(pdev);
 
 	prChipInfo = ((struct mt66xx_hif_driver_data *)
 				id->driver_data)->chip_info;
