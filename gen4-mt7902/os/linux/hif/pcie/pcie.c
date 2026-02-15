@@ -487,6 +487,13 @@ static int mtk_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	struct GLUE_INFO *prGlueInfo = NULL;
 	struct BUS_INFO *prBusInfo;
 	uint32_t count = 0;
+	extern unsigned int disable_rpm;
+
+	/* If Runtime PM is disabled by module param, block auto-suspend */
+	if (disable_rpm && PMSG_IS_AUTO(state)) {
+		DBGLOG(HAL, INFO, "Runtime PM disabled, blocking auto-suspend\n");
+		return -EBUSY;
+	}
 	int wait = 0;
 	struct ADAPTER *prAdapter = NULL;
 	uint8_t drv_own_fail = FALSE;

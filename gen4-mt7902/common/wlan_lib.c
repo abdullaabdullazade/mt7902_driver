@@ -3340,7 +3340,8 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 	struct CMD_NIC_POWER_CTRL *pNicPwrCtrl;
 	struct mt66xx_chip_info *prChipInfo;
 	uint16_t cmd_size;
-	uint16_t u2MaxWait = NIC_TX_RESOURCE_POLLING_DELAY_MSEC * 1000;
+	extern unsigned int cmd_timeout_ms;
+	uint16_t u2MaxWait = cmd_timeout_ms;
 
 	ASSERT(prAdapter);
 

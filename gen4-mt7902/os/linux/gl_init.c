@@ -174,6 +174,14 @@ module_param(init_delay_ms, int, 0644);
 MODULE_PARM_DESC(init_delay_ms,
 	"Delay in ms between init retries (default=2000)");
 
+unsigned int disable_rpm = 0;
+module_param(disable_rpm, int, 0644);
+MODULE_PARM_DESC(disable_rpm, "Disable Runtime PM (1=disable, 0=enable). Default: 0");
+
+unsigned int cmd_timeout_ms = 4000;
+module_param(cmd_timeout_ms, int, 0644);
+MODULE_PARM_DESC(cmd_timeout_ms, "Command timeout (ms). Default: 4000");
+
 /* NIC interface name */
 #define NIC_INF_NAME    "wlan%d"
 
