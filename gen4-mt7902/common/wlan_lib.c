@@ -1216,9 +1216,10 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 					kalMsleep(300);
 				}
 			}
-			if (!halHifSwInfoInit(prAdapter) && hif_retry >= 2) {
+			if (hif_retry >= 2) {
 				DBGLOG(INIT, ERROR,
-				       "halHifSwInfoInit failed!\n");
+				       "halHifSwInfoInit failed after"
+				       " retries!\n");
 				u4Status = WLAN_STATUS_FAILURE;
 				eFailReason = INIT_HIFINFO_FAIL;
 				break;
@@ -1243,10 +1244,10 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 					kalMsleep(300);
 				}
 			}
-			if (wlanSetChipEcoInfo(prAdapter)
-			    != WLAN_STATUS_SUCCESS && eco_retry >= 2) {
+			if (eco_retry >= 2) {
 				DBGLOG(INIT, ERROR,
-				       "wlanSetChipEcoInfo failed!\n");
+				       "wlanSetChipEcoInfo failed after"
+				       " retries!\n");
 				u4Status = WLAN_STATUS_FAILURE;
 				eFailReason = SET_CHIP_ECO_INFO_FAIL;
 				break;
@@ -1265,6 +1266,31 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 
 		/* 2. Initialize Tx Resource to fw download state */
 		nicTxInitResetResource(prAdapter);
+
+		/* 2.5 MCU liveness check — verify MCU is not in
+		 * latchup before attempting FW download. Reading
+		 * the chip ID register; 0xFFFFFFFF or 0x0 means
+		 * the bus is dead.
+		 */
+		{
+			uint32_t u4ChipId = 0;
+
+			HAL_MCR_RD(prAdapter,
+				   prAdapter->chip_info->top_hvr,
+				   &u4ChipId);
+			if (u4ChipId == 0xFFFFFFFF || u4ChipId == 0x0) {
+				DBGLOG(INIT, ERROR,
+				       "MCU latchup detected (chip_id="
+				       "0x%08x), aborting FW download\n",
+				       u4ChipId);
+				u4Status = WLAN_STATUS_FAILURE;
+				eFailReason = RAM_CODE_DOWNLOAD_FAIL;
+				break;
+			}
+			DBGLOG(INIT, INFO,
+			       "MCU alive check OK (chip_id=0x%08x)\n",
+			       u4ChipId);
+		}
 
 		/* Retry FW download — cold MCU may not be ready to
 		 * accept firmware commands on first attempt.
@@ -1297,8 +1323,29 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 
 		DBGLOG(INIT, INFO, "Waiting for Ready bit..\n");
 
-		/* 4 <9> check Wi-Fi FW asserts ready bit */
-		u4Status = wlanCheckWifiFunc(prAdapter, TRUE);
+		/* 4 <9> check Wi-Fi FW asserts ready bit with retry
+		 * for cold MCU. After FW download the MCU may need
+		 * extra time to finish boot on cold hardware.
+		 */
+		{
+			int ready_retry;
+
+			for (ready_retry = 0; ready_retry < 3;
+			     ready_retry++) {
+				u4Status = wlanCheckWifiFunc(prAdapter,
+							    TRUE);
+				if (u4Status == WLAN_STATUS_SUCCESS)
+					break;
+				if (ready_retry < 2) {
+					DBGLOG(INIT, WARN,
+					       "Ready bit not asserted"
+					       " (attempt %d/3),"
+					       " retrying in 500ms...\n",
+					       ready_retry + 1);
+					kalMsleep(500);
+				}
+			}
+		}
 
 		if (u4Status == WLAN_STATUS_SUCCESS) {
 #if defined(_HIF_SDIO)
@@ -12856,6 +12903,14 @@ uint32_t wlanWakeUpWiFi(IN struct ADAPTER *prAdapter)
 
 	nicpmWakeUpWiFi(prAdapter);
 	HAL_HIF_INIT(prAdapter);
+
+	/* Check if HIF init caused a bus access failure */
+	if (fgIsBusAccessFailed == TRUE) {
+		DBGLOG(INIT, ERROR,
+		       "HIF init failed in wlanWakeUpWiFi"
+		       " (bus access failure)\n");
+		return WLAN_STATUS_FAILURE;
+	}
 
 	return WLAN_STATUS_SUCCESS;
 }
