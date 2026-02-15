@@ -1185,7 +1185,7 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 		wlanCheckAsicCap(prAdapter);
 
 #if CFG_ENABLE_FW_DOWNLOAD
-		/* 4 <8> FW/patch download */
+		/* 4 <8> FW/patch download with retry for cold MCU */
 
 		/* 1. disable interrupt, download is done by polling mode only
 		 */
@@ -1194,14 +1194,32 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 		/* 2. Initialize Tx Resource to fw download state */
 		nicTxInitResetResource(prAdapter);
 
-		u4Status = wlanDownloadFW(prAdapter);
-		if (u4Status != WLAN_STATUS_SUCCESS) {
-			eFailReason = RAM_CODE_DOWNLOAD_FAIL;
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-				"[Wi-Fi On] [Ram code download fail!]");
-#endif
-			break;
+		/* Retry FW download — cold MCU may not be ready to
+		 * accept firmware commands on first attempt.
+		 */
+		{
+			int fw_retry;
+
+			for (fw_retry = 0; fw_retry < 3; fw_retry++) {
+				u4Status = wlanDownloadFW(prAdapter);
+				if (u4Status == WLAN_STATUS_SUCCESS)
+					break;
+
+				if (fw_retry < 2) {
+					DBGLOG(INIT, WARN,
+					       "FW download failed (attempt %d/3),"
+					       " retrying in 1s...\n",
+					       fw_retry + 1);
+					kalMsleep(1000);
+					nicTxInitResetResource(prAdapter);
+				} else {
+					DBGLOG(INIT, ERROR,
+					       "FW download failed after 3 attempts\n");
+					eFailReason = RAM_CODE_DOWNLOAD_FAIL;
+				}
+			}
+			if (u4Status != WLAN_STATUS_SUCCESS)
+				break;
 		}
 #endif
 

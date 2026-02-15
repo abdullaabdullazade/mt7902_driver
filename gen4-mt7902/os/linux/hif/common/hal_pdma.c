@@ -191,6 +191,7 @@ u_int8_t halVerifyChipID(IN struct ADAPTER *prAdapter)
 	struct mt66xx_chip_info *prChipInfo;
 	struct BUS_INFO *prBusInfo;
 	uint32_t u4CIR = 0;
+	int retry;
 
 	ASSERT(prAdapter);
 
@@ -200,10 +201,35 @@ u_int8_t halVerifyChipID(IN struct ADAPTER *prAdapter)
 	if (prAdapter->fgIsReadRevID || !prChipInfo->should_verify_chip_id)
 		return TRUE;
 
-	HAL_MCR_RD(prAdapter, prBusInfo->top_cfg_base + TOP_HW_CONTROL, &u4CIR);
+	/* Retry chip ID read — cold MCU may return garbage on first read.
+	 * 0xFFFFFFFF means BAR0 is dead (hardware latchup).
+	 */
+	for (retry = 0; retry < 5; retry++) {
+		HAL_MCR_RD(prAdapter,
+			   prBusInfo->top_cfg_base + TOP_HW_CONTROL, &u4CIR);
 
-	DBGLOG(INIT, INFO, "WCIR_CHIP_ID = 0x%x, chip_id = 0x%x\n",
-	       (uint32_t)(u4CIR & WCIR_CHIP_ID), prChipInfo->chip_id);
+		DBGLOG(INIT, INFO,
+		       "WCIR_CHIP_ID = 0x%x, chip_id = 0x%x (attempt %d)\n",
+		       (uint32_t)(u4CIR & WCIR_CHIP_ID),
+		       prChipInfo->chip_id, retry + 1);
+
+		/* BAR0 dead — no point retrying */
+		if (u4CIR == 0xFFFFFFFF) {
+			DBGLOG(INIT, ERROR,
+			       "BAR0 reads 0xFFFFFFFF — hardware latchup! "
+			       "Power drain required.\n");
+			return FALSE;
+		}
+
+		if ((u4CIR & WCIR_CHIP_ID) == prChipInfo->chip_id)
+			break;
+
+		if (retry < 4) {
+			DBGLOG(INIT, WARN,
+			       "Chip ID mismatch, retrying in 200ms...\n");
+			kalMsleep(200);
+		}
+	}
 
 	if ((u4CIR & WCIR_CHIP_ID) != prChipInfo->chip_id)
 		return FALSE;

@@ -321,6 +321,32 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pci_set_power_state(pdev, PCI_D0);
 	msleep(50);
 
+	/* Enable bus mastering — required for DMA */
+	pci_set_master(pdev);
+
+	/* Disable ASPM L1 during init — power saving states can
+	 * interfere with MCU communication on cold boot. The FW
+	 * will re-enable ASPM later if supported.
+	 */
+	pci_disable_link_state(pdev,
+		PCIE_LINK_STATE_L1 | PCIE_LINK_STATE_CLKPM);
+
+	/* Validate BAR0 is accessible — if hardware is in latchup
+	 * state, all MMIO reads return 0xFFFFFFFF.
+	 */
+	{
+		u32 val;
+
+		pci_read_config_dword(pdev, PCI_VENDOR_ID, &val);
+		if (val == 0xFFFFFFFF || val == 0) {
+			DBGLOG(INIT, ERROR,
+			       "BAR0 dead (0x%08x) — hardware latchup! "
+			       "Power drain required.\n", val);
+			ret = -ENODEV;
+			goto out;
+		}
+	}
+
 #if defined(SOC3_0)
 	if ((void *)&mt66xx_driver_data_soc3_0 == (void *)id->driver_data)
 		DBGLOG(INIT, INFO,
