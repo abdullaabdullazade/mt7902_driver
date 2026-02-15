@@ -665,9 +665,14 @@ uint32_t nicInitializeAdapter(IN struct ADAPTER *prAdapter)
 	prAdapter->fgIsReadRevID = FALSE;
 
 	do {
+		extern unsigned int mcu_bypass;
 		if (!nicVerifyChipID(prAdapter)) {
-			u4Status = WLAN_STATUS_FAILURE;
-			break;
+			if (mcu_bypass) {
+				DBGLOG(INIT, WARN, "Chip ID verification failed, but mcu_bypass=1. Ignoring...\n");
+			} else {
+				u4Status = WLAN_STATUS_FAILURE;
+				break;
+			}
 		}
 		/* 4 <1> MCR init */
 		nicMCRInit(prAdapter);

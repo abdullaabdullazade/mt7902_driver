@@ -105,6 +105,10 @@ sudo modprobe mt7902 disable_rpm=1
 
 # 2. Increase Command Timeout (prevents "No response from chip" errors)
 sudo modprobe mt7902 cmd_timeout_ms=8000
+
+# 3. Nuclear Option (Bypass MCU/Chip ID checks)
+# Use this if the card is completely dead/unresponsive but you want to force load.
+sudo modprobe mt7902 mcu_bypass=1
 ```
 
 ### Stock driver conflict

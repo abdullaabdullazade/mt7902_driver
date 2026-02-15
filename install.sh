@@ -199,8 +199,19 @@ EOF
     rmmod mt7921_common 2>/dev/null || true
     rmmod mt76_connac_lib 2>/dev/null || true
     rmmod mt7902 2>/dev/null || true
-    modprobe mt7902
-    ok "mt7902 module loaded"
+    if ! modprobe mt7902; then
+        warn "Standard load failed. Attempting MCU Bypass (Force Load)..."
+        if modprobe mt7902 mcu_bypass=1; then
+            warn "Module loaded with MCU Bypass! Hardware may be unstable."
+            echo "options mt7902 mcu_bypass=1" > /etc/modprobe.d/mt7902.conf
+            ok "Persisted MCU bypass options to /etc/modprobe.d/mt7902.conf"
+        else
+            fail "Could not load mt7902 module even with bypass."
+            exit 1
+        fi
+    else
+        ok "mt7902 module loaded"
+    fi
 
     # install late-load systemd service (fixes boot race condition)
     if [ -f "${SCRIPT_DIR}/mt7902-late.service" ] && command -v systemctl &>/dev/null; then
@@ -323,6 +334,7 @@ echo -e "  ${DIM}WiFi flaky? → sudo rmmod mt7902 && sudo modprobe mt7902${NC}"
 echo -e "  ${DIM}Stability issues? Try these options:${NC}"
 echo -e "    ${DIM}1. Disable Runtime PM: sudo modprobe mt7902 disable_rpm=1${NC}"
 echo -e "    ${DIM}2. Increase Timeout:   sudo modprobe mt7902 cmd_timeout_ms=8000${NC}"
+echo -e "    ${DIM}3. Force Load (Dead Card): sudo modprobe mt7902 mcu_bypass=1${NC}"
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
 echo ""

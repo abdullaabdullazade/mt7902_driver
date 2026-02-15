@@ -182,6 +182,10 @@ unsigned int cmd_timeout_ms = 4000;
 module_param(cmd_timeout_ms, int, 0644);
 MODULE_PARM_DESC(cmd_timeout_ms, "Command timeout (ms). Default: 4000");
 
+unsigned int mcu_bypass = 0;
+module_param(mcu_bypass, int, 0644);
+MODULE_PARM_DESC(mcu_bypass, "Force driver load even if MCU/FW fails (1=enable). Default: 0");
+
 /* NIC interface name */
 #define NIC_INF_NAME    "wlan%d"
 
