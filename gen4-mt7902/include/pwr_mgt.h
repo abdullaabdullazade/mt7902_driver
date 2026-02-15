@@ -88,12 +88,12 @@
 		(PM_UAPSD_AC0 | PM_UAPSD_AC1 | PM_UAPSD_AC2 | PM_UAPSD_AC3)
 #define PM_UAPSD_NONE                       0
 
-#define LP_OWN_BACK_TOTAL_DELAY_MS      2048	/* exponential of 2 */
+#define LP_OWN_BACK_TOTAL_DELAY_MS      8192	/* increased for cold-MCU hw */
 #define LP_OWN_BACK_LOOP_DELAY_MS       1	/* exponential of 2 */
 #define LP_OWN_REQ_CLR_INTERVAL_MS	200
 #define LP_OWN_BACK_FAILED_RETRY_CNT    5
 #define LP_OWN_BACK_FAILED_LOG_SKIP_MS  2000
-#define LP_OWN_BACK_FAILED_RESET_CNT    5
+#define LP_OWN_BACK_FAILED_RESET_CNT    10	/* increased for cold-MCU hw */
 #define LP_OWN_BACK_FAILED_DBGCR_POLL_ROUND	5
 #define LP_DBGCR_POLL_ROUND				1
 #define LP_OWN_BACK_LOOP_DELAY_MIN_US   900

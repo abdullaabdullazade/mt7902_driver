@@ -2381,7 +2381,16 @@ uint32_t wlanDownloadFW(IN struct ADAPTER *prAdapter)
 		return WLAN_STATUS_FAILURE;
 
 	prChipInfo = prAdapter->chip_info;
+	if (!prChipInfo) {
+		DBGLOG(INIT, ERROR, "chip_info is NULL, abort FW download\n");
+		return WLAN_STATUS_FAILURE;
+	}
+
 	prFwDlOps = prChipInfo->fw_dl_ops;
+	if (!prFwDlOps) {
+		DBGLOG(INIT, ERROR, "fw_dl_ops is NULL, abort FW download\n");
+		return WLAN_STATUS_FAILURE;
+	}
 
 	HAL_ENABLE_FWDL(prAdapter, TRUE);
 

@@ -1613,12 +1613,8 @@ uint32_t wlanCheckWifiFunc(IN struct ADAPTER *prAdapter,
 			DBGLOG(INIT, ERROR,
 			       "Waiting for %s: Timeout, Status=0x%08x\n",
 			       fgRdyChk ? "ready bit" : "power off", u4Result);
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-				"[Wi-Fi] [Read WCIR_WLAN_READY fail!]");
-#else
-			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_CR_ACCESS_FAIL);
-#endif
+			DBGLOG(INIT, ERROR,
+			       "MCU not responding (cold boot?), skip reset trigger\n");
 			u4Status = WLAN_STATUS_FAILURE;
 			break;
 		}

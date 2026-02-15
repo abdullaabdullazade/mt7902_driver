@@ -380,7 +380,8 @@ static u_int8_t halDriverOwnCheckCR4(struct ADAPTER *prAdapter)
 			       LP_OWN_BACK_FAILED_LOG_SKIP_MS);
 			fgStatus = FALSE;
 
-			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_DRV_OWN_FAIL);
+			DBGLOG(INIT, ERROR,
+			       "CR4 not ready, skip reset to prevent panic\n");
 
 			break;
 		}
@@ -426,11 +427,12 @@ static void halDriverOwnTimeout(struct ADAPTER *prAdapter,
 		prAdapter->u4OwnFailedLogCount++;
 		if (prAdapter->u4OwnFailedLogCount >
 		    LP_OWN_BACK_FAILED_RESET_CNT) {
-			if (prChipDbgOps->showCsrInfo)
+			if (prChipDbgOps && prChipDbgOps->showCsrInfo)
 				prChipDbgOps->showCsrInfo(prAdapter);
 
-			/* Trigger RESET */
-			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_DRV_OWN_FAIL);
+			DBGLOG(INIT, ERROR,
+			       "LP own back failed too many times, "
+			       "skip reset trigger to prevent panic\n");
 		}
 		GET_CURRENT_SYSTIME(&prAdapter->rLastOwnFailedLogTime);
 	}
@@ -644,16 +646,19 @@ u_int8_t halSetDriverOwn(IN struct ADAPTER *prAdapter)
 			prBusInfo->checkDummyReg(prAdapter->prGlueInfo);
 	} else {
 		DBGLOG(INIT, WARN, "DRIVER OWN Fail!\n");
-		if (prChipInfo->prDebugOps->show_mcu_debug_info)
-			prChipInfo->prDebugOps->show_mcu_debug_info(prAdapter, NULL, 0,
-				DBG_MCU_DBG_ALL, NULL);
+		if (prChipInfo->prDebugOps) {
+			if (prChipInfo->prDebugOps->show_mcu_debug_info)
+				prChipInfo->prDebugOps->show_mcu_debug_info(
+					prAdapter, NULL, 0,
+					DBG_MCU_DBG_ALL, NULL);
 #if (CFG_SUPPORT_DEBUG_SOP == 1)
-		if (prChipInfo->prDebugOps->show_debug_sop_info)
-			prChipInfo->prDebugOps->show_debug_sop_info(prAdapter,
-				SLAVENORESP);
+			if (prChipInfo->prDebugOps->show_debug_sop_info)
+				prChipInfo->prDebugOps->show_debug_sop_info(
+					prAdapter, SLAVENORESP);
 #endif
-		if (prChipInfo->prDebugOps->showCsrInfo)
-			prChipInfo->prDebugOps->showCsrInfo(prAdapter);
+			if (prChipInfo->prDebugOps->showCsrInfo)
+				prChipInfo->prDebugOps->showCsrInfo(prAdapter);
+		}
 	}
 
 	KAL_REC_TIME_END();

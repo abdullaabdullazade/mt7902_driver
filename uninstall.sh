@@ -97,6 +97,19 @@ if [ "$RM_BT" = true ]; then
     fi
 fi
 
+# remove blacklist config files created by installer
+step "Removing driver blacklist configs"
+rm -f /etc/modprobe.d/blacklist-mt7921.conf 2>/dev/null || true
+rm -f /etc/modprobe.d/blacklist-mt7902.conf 2>/dev/null || true
+ok "Blacklist configs removed"
+
+# remove late-load systemd service
+if command -v systemctl &>/dev/null; then
+    systemctl disable mt7902-late.service 2>/dev/null || true
+    rm -f /etc/systemd/system/mt7902-late.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+fi
+
 depmod -a
 
 echo ""

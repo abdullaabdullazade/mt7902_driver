@@ -79,6 +79,53 @@ sudo ./uninstall.sh --keep-fw  # keep firmware files
 - If BT firmware conflicts with the WiFi driver, remove the duplicate:
   `sudo rm /lib/firmware/mediatek/mt7902/BT_RAM_CODE_MT7902_1_1_hdr.bin.zst`
 
+### Kernel panic on some hardware
+
+On certain devices (e.g. ASUS Vivobook with i3-1315U), the driver may cause a kernel panic during initialization when the MCU is in a "cold" (uninitialized) state. This has been partially mitigated with defensive patches in the driver code. If you still experience panics:
+
+```sh
+# Temporary workaround: blacklist the module to prevent loading
+echo "blacklist mt7902" | sudo tee /etc/modprobe.d/blacklist-mt7902.conf
+```
+
+The driver includes multiple layers of protection against cold-MCU panics:
+- **PCIe power cycle** at probe time forces MCU to re-initialize
+- **Retry mechanism** with configurable attempts and delay (default: 3 retries, 2s apart)
+- **Late-load service** (`mt7902-late.service`) defers loading until PCIe is stable
+- **Extended timeouts** (8s for LP_OWN handshake instead of 2s)
+
+To tune retry behavior for your hardware:
+```sh
+sudo modprobe mt7902 init_retry=5 init_delay_ms=5000
+```
+
+### Stock driver conflict
+
+The kernel's built-in `mt7921e` / `mt7902e` / `mt76_connac_lib` drivers conflict with this driver. The installer blacklists them automatically, but if you installed manually, create the blacklist yourself:
+
+```sh
+sudo tee /etc/modprobe.d/blacklist-mt7921.conf > /dev/null <<'EOF'
+blacklist mt7921e
+blacklist mt7902e
+blacklist mt7921_common
+blacklist mt76_connac_lib
+EOF
+sudo update-initramfs -u   # or mkinitcpio -P (Arch) / dracut --force (Fedora)
+```
+
+### Hardware latchup (dead WiFi after crash)
+
+If the driver crashes or hangs, the MT7902 PCIe controller can lock up completely. Symptoms:
+- `modprobe mt7902` fails immediately
+- `dmesg` shows BAR0 read errors
+- Driver loads but WiFi interface never appears
+
+**Recovery:** You must perform a full power drain:
+1. Shut down the laptop completely
+2. Unplug the AC adapter / charger
+3. Hold the **Power button for 40 seconds**
+4. Plug back in and boot
+
 If WiFi becomes flaky, reload the module:
 
 ```sh
@@ -109,6 +156,8 @@ This project wouldn't exist without the work of:
 - **[hmtheboy154](https://github.com/hmtheboy154)** — WiFi driver ([gen4-mt7902](https://github.com/hmtheboy154/gen4-mt7902)). Extracted the `gen4-mt79xx` driver from Xiaomi's rodin BSP and adapted it for MT7902. Also contributes to [BlissOS](https://blissos.org/).
 
 - **[OnlineLearningTutorials](https://github.com/OnlineLearningTutorials)** — Bluetooth driver and firmware ([mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp)). Patched `btusb`/`btmtk` for MT7902 support and provides all the firmware files.
+
+- **[goracle](https://github.com/goracle)** — Experimental driver fork ([gen4-mt7902](https://github.com/goracle/gen4-mt7902)) with stability improvements, PCIe latchup recovery docs, and AIS FSM rewrites.
 
 Community discussion happens on [Discord](https://discord.gg/JGhjAxEFhz).
 

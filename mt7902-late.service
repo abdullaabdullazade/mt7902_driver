@@ -1,0 +1,23 @@
+[Unit]
+Description=Late-load MT7902 WiFi driver (avoids boot race condition)
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Wait for PCIe subsystem to fully initialize
+ExecStartPre=/bin/sleep 5
+# Unload any conflicting stock drivers
+ExecStartPre=-/sbin/rmmod mt7921e
+ExecStartPre=-/sbin/rmmod mt7902e
+ExecStartPre=-/sbin/rmmod mt7921_common
+ExecStartPre=-/sbin/rmmod mt76_connac_lib
+ExecStartPre=-/sbin/rmmod mt7902
+# Load our custom driver
+ExecStart=/sbin/modprobe mt7902
+# Clean unload before shutdown/reboot to prevent PCIe hang
+ExecStop=-/sbin/rmmod mt7902
+
+[Install]
+WantedBy=multi-user.target

@@ -310,6 +310,17 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out;
 	}
 
+	/* PCIe power cycle to wake up cold MCU.
+	 * On some hardware the MT7902 MCU stays in an undefined
+	 * power state after cold boot. Cycling D3hot→D0 forces
+	 * the PCIe endpoint to re-initialize, which wakes up
+	 * the MCU. This is similar to what mt76 does for MT7921.
+	 */
+	pci_set_power_state(pdev, PCI_D3hot);
+	msleep(10);
+	pci_set_power_state(pdev, PCI_D0);
+	msleep(50);
+
 #if defined(SOC3_0)
 	if ((void *)&mt66xx_driver_data_soc3_0 == (void *)id->driver_data)
 		DBGLOG(INIT, INFO,

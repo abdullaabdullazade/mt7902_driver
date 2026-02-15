@@ -170,11 +170,46 @@ install_wifi() {
     fi
     ok "Firmware copied to ${FW_DIR}/mediatek/"
 
+    step "Blacklisting conflicting stock drivers"
+    cat > /etc/modprobe.d/blacklist-mt7921.conf <<'EOF'
+# Blacklist stock MediaTek WiFi drivers — using custom mt7902.ko instead
+blacklist mt7921e
+blacklist mt7902e
+blacklist mt7921_common
+blacklist mt76_connac_lib
+blacklist mt7921s
+blacklist mt7921u
+EOF
+    ok "Stock drivers blacklisted (/etc/modprobe.d/blacklist-mt7921.conf)"
+
+    # regenerate initramfs so blacklist takes effect on next boot
+    if command -v update-initramfs &>/dev/null; then
+        update-initramfs -u 2>/dev/null && ok "initramfs updated (Debian/Ubuntu)"
+    elif command -v mkinitcpio &>/dev/null; then
+        mkinitcpio -P 2>/dev/null && ok "initramfs updated (Arch)"
+    elif command -v dracut &>/dev/null; then
+        dracut --force 2>/dev/null && ok "initramfs updated (Fedora/RHEL)"
+    fi
+
     step "Loading WiFi module"
     depmod -a
+    # unload any conflicting stock drivers first
+    rmmod mt7921e 2>/dev/null || true
+    rmmod mt7902e 2>/dev/null || true
+    rmmod mt7921_common 2>/dev/null || true
+    rmmod mt76_connac_lib 2>/dev/null || true
     rmmod mt7902 2>/dev/null || true
     modprobe mt7902
     ok "mt7902 module loaded"
+
+    # install late-load systemd service (fixes boot race condition)
+    if [ -f "${SCRIPT_DIR}/mt7902-late.service" ] && command -v systemctl &>/dev/null; then
+        step "Installing late-load systemd service"
+        cp "${SCRIPT_DIR}/mt7902-late.service" /etc/systemd/system/
+        systemctl daemon-reload
+        systemctl enable mt7902-late.service 2>/dev/null
+        ok "mt7902-late.service enabled (auto-loads WiFi after boot)"
+    fi
 }
 
 # ── bluetooth ─────────────────────────────────────────────────

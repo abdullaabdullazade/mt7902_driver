@@ -163,6 +163,17 @@ module_param_named(p2p, gprifnamep2p, charp, 0000);
 module_param_named(ap, gprifnameap, charp, 0000);
 #endif /* CFG_DRIVER_INF_NAME_CHANGE */
 
+/* MCU init retry parameters for cold-boot hardware */
+static int init_retry = 3;
+module_param(init_retry, int, 0644);
+MODULE_PARM_DESC(init_retry,
+	"Number of wlanAdapterStart attempts (default=3, max=10)");
+
+static int init_delay_ms = 2000;
+module_param(init_delay_ms, int, 0644);
+MODULE_PARM_DESC(init_delay_ms,
+	"Delay in ms between init retries (default=2000)");
+
 /* NIC interface name */
 #define NIC_INF_NAME    "wlan%d"
 
@@ -6023,9 +6034,42 @@ static int32_t wlanProbe(void *pvData, void *pvDriverData)
 			&prRegInfo,
 			&prChipInfo);
 
-		if (wlanAdapterStart(prAdapter,
-				     prRegInfo, FALSE) != WLAN_STATUS_SUCCESS)
-			i4Status = -EIO;
+		/* wlanAdapterStart with retry for cold-MCU hardware.
+		 * On some devices the MCU needs time to warm up after
+		 * power-on. Configurable via module params:
+		 *   modprobe mt7902 init_retry=5 init_delay_ms=5000
+		 */
+		{
+			int retry;
+			int max_retries = init_retry;
+			int delay_ms = init_delay_ms;
+
+			/* clamp to sane values */
+			if (max_retries < 1) max_retries = 1;
+			if (max_retries > 10) max_retries = 10;
+			if (delay_ms < 500) delay_ms = 500;
+			if (delay_ms > 10000) delay_ms = 10000;
+
+			for (retry = 0; retry < max_retries; retry++) {
+				if (wlanAdapterStart(prAdapter,
+					prRegInfo, FALSE) == WLAN_STATUS_SUCCESS) {
+					i4Status = 0;
+					break;
+				}
+				if (retry < max_retries - 1) {
+					DBGLOG(INIT, WARN,
+					       "wlanAdapterStart failed (attempt %d/%d),"
+					       " retrying in %dms...\n",
+					       retry + 1, max_retries, delay_ms);
+					kalMsleep(delay_ms);
+				} else {
+					DBGLOG(INIT, ERROR,
+					       "wlanAdapterStart failed after %d attempts\n",
+					       max_retries);
+					i4Status = -EIO;
+				}
+			}
+		}
 
 		wlanOnPostAdapterStart(prAdapter, prGlueInfo);
 
