@@ -131,6 +131,10 @@ install_wifi() {
     local src="${SCRIPT_DIR}/gen4-mt7902"
     [ -d "$src" ] || { fail "WiFi source not found: $src"; return 1; }
 
+    # detect firmware path (Arch uses /usr/lib/firmware, others use /lib/firmware)
+    local FW_DIR="/lib/firmware"
+    [ -d "/usr/lib/firmware" ] && ! [ -L "/lib" ] && FW_DIR="/usr/lib/firmware"
+
     step "Building WiFi driver (gen4-mt7902)"
 
     if [ "$USE_DKMS" = true ]; then
@@ -152,19 +156,25 @@ install_wifi() {
     fi
 
     step "Installing WiFi firmware"
-    mkdir -p /lib/firmware/mediatek/mt7902
-    [ -d "$src/firmware" ] && cp "$src/firmware/"* /lib/firmware/mediatek/ 2>/dev/null || true
+    mkdir -p "${FW_DIR}/mediatek/mt7902"
+    [ -d "$src/firmware" ] && cp "$src/firmware/"* "${FW_DIR}/mediatek/" 2>/dev/null || true
 
     local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
     if [ -d "$fw" ]; then
         for f in "$fw"/WIFI_*.bin.zst "$fw"/WIFI_*.bin; do
-            [ -f "$f" ] && cp "$f" /lib/firmware/mediatek/
+            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
         done
         for f in "$fw"/mt7902_*.bin.zst "$fw"/mt7902_*.bin; do
-            [ -f "$f" ] && cp "$f" /lib/firmware/mediatek/mt7902/
+            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/mt7902/"
         done
     fi
-    ok "Firmware copied to /lib/firmware/mediatek/"
+    ok "Firmware copied to ${FW_DIR}/mediatek/"
+
+    step "Loading WiFi module"
+    depmod -a
+    rmmod mt7902 2>/dev/null || true
+    modprobe mt7902
+    ok "mt7902 module loaded"
 }
 
 # ── bluetooth ─────────────────────────────────────────────────
@@ -172,6 +182,10 @@ install_bt() {
     local base="${SCRIPT_DIR}/mt7902_temp"
     local tag="linux-${KMAJOR}.${KMINOR}"
     local bt_dir=""
+
+    # detect firmware path
+    local FW_DIR="/lib/firmware"
+    [ -d "/usr/lib/firmware" ] && ! [ -L "/lib" ] && FW_DIR="/usr/lib/firmware"
 
     step "Locating Bluetooth source for kernel ${KVER}"
 
@@ -230,9 +244,9 @@ install_bt() {
     step "Installing Bluetooth firmware"
     local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
     if [ -d "$fw" ]; then
-        mkdir -p /lib/firmware/mediatek
+        mkdir -p "${FW_DIR}/mediatek"
         for f in "$fw"/BT_*.bin.zst "$fw"/BT_*.bin; do
-            [ -f "$f" ] && cp "$f" /lib/firmware/mediatek/
+            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
         done
     fi
     ok "BT firmware copied"
