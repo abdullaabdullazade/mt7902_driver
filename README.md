@@ -96,7 +96,15 @@ The driver includes multiple layers of protection against cold-MCU panics:
 
 To tune retry behavior for your hardware:
 ```sh
+# Basic retry tuning
 sudo modprobe mt7902 init_retry=5 init_delay_ms=5000
+
+# Aggressive stability options (try if basic retry fails)
+# 1. Disable Runtime PM (prevents sleep/wake crashes)
+sudo modprobe mt7902 disable_rpm=1
+
+# 2. Increase Command Timeout (prevents "No response from chip" errors)
+sudo modprobe mt7902 cmd_timeout_ms=8000
 ```
 
 ### Stock driver conflict

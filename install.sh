@@ -320,6 +320,9 @@ else
 fi
 echo -e "  ${DIM}Reboot for changes to take effect.${NC}"
 echo -e "  ${DIM}WiFi flaky? → sudo rmmod mt7902 && sudo modprobe mt7902${NC}"
+echo -e "  ${DIM}Stability issues? Try these options:${NC}"
+echo -e "    ${DIM}1. Disable Runtime PM: sudo modprobe mt7902 disable_rpm=1${NC}"
+echo -e "    ${DIM}2. Increase Timeout:   sudo modprobe mt7902 cmd_timeout_ms=8000${NC}"
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
 echo ""
