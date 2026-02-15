@@ -1109,10 +1109,6 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 						"nicAllocateAdapterMemory Error!\n");
 				u4Status = WLAN_STATUS_FAILURE;
 				eFailReason = ALLOC_ADAPTER_MEM_FAIL;
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-				mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-						"[Wi-Fi On] nicAllocateAdapterMemory Error!");
-#endif
 				break;
 			}
 
@@ -1206,23 +1202,55 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 			}
 		}
 
-		/* 4 <5> HIF SW info initialize */
-		if (!halHifSwInfoInit(prAdapter)) {
-			DBGLOG(INIT, ERROR, "halHifSwInfoInit failed!\n");
-			u4Status = WLAN_STATUS_FAILURE;
-			eFailReason = INIT_HIFINFO_FAIL;
-			break;
+		/* 4 <5> HIF SW info initialize with retry */
+		{
+			int hif_retry;
+
+			for (hif_retry = 0; hif_retry < 2; hif_retry++) {
+				if (halHifSwInfoInit(prAdapter))
+					break;
+				if (hif_retry < 1) {
+					DBGLOG(INIT, WARN,
+					       "halHifSwInfoInit failed,"
+					       " retrying in 300ms...\n");
+					kalMsleep(300);
+				}
+			}
+			if (!halHifSwInfoInit(prAdapter) && hif_retry >= 2) {
+				DBGLOG(INIT, ERROR,
+				       "halHifSwInfoInit failed!\n");
+				u4Status = WLAN_STATUS_FAILURE;
+				eFailReason = INIT_HIFINFO_FAIL;
+				break;
+			}
 		}
 
 		/* 4 <6> Enable HIF cut-through to N9 mode, not visiting CR4 */
 		HAL_ENABLE_FWDL(prAdapter, TRUE);
 
-		/* 4 <7> Get ECO Version */
-		if (wlanSetChipEcoInfo(prAdapter) != WLAN_STATUS_SUCCESS) {
-			DBGLOG(INIT, ERROR, "wlanSetChipEcoInfo failed!\n");
-			u4Status = WLAN_STATUS_FAILURE;
-			eFailReason = SET_CHIP_ECO_INFO_FAIL;
-			break;
+		/* 4 <7> Get ECO Version with retry */
+		{
+			int eco_retry;
+
+			for (eco_retry = 0; eco_retry < 2; eco_retry++) {
+				if (wlanSetChipEcoInfo(prAdapter)
+				    == WLAN_STATUS_SUCCESS)
+					break;
+				if (eco_retry < 1) {
+					DBGLOG(INIT, WARN,
+					       "wlanSetChipEcoInfo failed,"
+					       " retrying in 300ms...\n");
+					kalMsleep(300);
+				}
+			}
+			if (wlanSetChipEcoInfo(prAdapter)
+			    != WLAN_STATUS_SUCCESS && eco_retry >= 2) {
+				DBGLOG(INIT, ERROR,
+				       "wlanSetChipEcoInfo failed!\n");
+				u4Status = WLAN_STATUS_FAILURE;
+				eFailReason = SET_CHIP_ECO_INFO_FAIL;
+				break;
+			}
 		}
 
 		/* recheck Asic capability depends on ECO version */
@@ -3325,10 +3353,6 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 	prCmdInfo = cmdBufAllocateCmdInfo(prAdapter, cmd_size);
 	if (!prCmdInfo) {
 		DBGLOG(INIT, ERROR, "Allocate CMD_INFO_T ==> FAILED.\n");
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-		mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-			"[Wi-Fi Off] Allocate CMD_INFO_T ==> FAILED.");
-#endif
 		return WLAN_STATUS_FAILURE;
 	}
 
@@ -3396,10 +3420,6 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 		     ucTC) != WLAN_STATUS_SUCCESS) {
 		DBGLOG(INIT, ERROR,
 		       "Fail to transmit CMD_NIC_POWER_CTRL command\n");
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-				"[Wi-Fi Off] Fail to transmit CMD_NIC_POWER_CTRL command");
-#endif
 		status = WLAN_STATUS_FAILURE;
 	}
 

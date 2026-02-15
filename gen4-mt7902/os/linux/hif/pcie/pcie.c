@@ -625,7 +625,16 @@ int mtk_pci_resume(struct pci_dev *pdev)
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
 
+	/* Force MCU wake after deep sleep — some hardware needs
+	 * a power cycle to re-initialize the MCU after suspend.
+	 */
+	pci_set_power_state(pdev, PCI_D3hot);
+	msleep(10);
+	pci_set_power_state(pdev, PCI_D0);
+	msleep(50);
 
+	/* Disable ASPM L1 to prevent link latency issues */
+	pci_disable_link_state(pdev, PCIE_LINK_STATE_L1);
 
 	/* Driver own */
 	/* Include restore PDMA settings */
@@ -929,9 +938,24 @@ u_int8_t glBusInit(void *pvData)
 	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(g_u4DmaMask));
 #endif
 	if (ret != 0) {
-		DBGLOG(INIT, INFO, "set DMA mask failed!errno=%d\n", ret);
-		return FALSE;
+		/* Fallback to 32-bit DMA if configured mask fails */
+		DBGLOG(INIT, WARN,
+		       "DMA mask %u failed, falling back to 32-bit\n",
+		       g_u4DmaMask);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
+		ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+#else
+		ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+#endif
+		if (ret != 0) {
+			DBGLOG(INIT, ERROR,
+			       "set DMA mask failed! errno=%d\n", ret);
+			return FALSE;
+		}
+		g_u4DmaMask = 32;
 	}
+	/* Set coherent DMA mask to match streaming mask */
+	dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(g_u4DmaMask));
 
 	ret = pci_request_regions(pdev, pci_name(pdev));
 	if (ret != 0) {
