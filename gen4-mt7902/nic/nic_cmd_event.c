@@ -5673,8 +5673,8 @@ void nicEventAssertDump(IN struct ADAPTER *prAdapter,
 				prAdapter->fgN9AssertDumpOngoing = FALSE;
 				cnmTimerStopTimer(prAdapter,
 						  &prAdapter->rN9CorDumpTimer);
-				GL_DEFAULT_RESET_TRIGGER(prAdapter,
-					RST_FW_ASSERT_DONE);
+				DBGLOG(NIC, ERROR,
+					"Core dump end \u2014 skipping reset trigger\n");
 			}
 
 			wlanCorDumpTimerReset(prAdapter, TRUE);

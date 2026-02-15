@@ -2800,8 +2800,8 @@ void wlanReleasePendingOid(IN struct ADAPTER *prAdapter,
 				  SLAVENORESP);
 #endif
 
-				GL_DEFAULT_RESET_TRIGGER(prAdapter,
-							 RST_OID_TIMEOUT);
+				DBGLOG(INIT, ERROR,
+				       "OID timeout — skipping reset trigger\n");
 			}
 
 			prAdapter->fgIsChipNoAck = TRUE;
@@ -10248,8 +10248,9 @@ void wlanN9CorDumpTimeOut(IN struct ADAPTER *prAdapter,
 		prAdapter->fgN9CorDumpFileOpend = FALSE;
 	}
 
-	/* Trigger RESET */
-	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_FW_ASSERT_TIMEOUT);
+	/* Log only — skipping reset trigger for stability */
+	DBGLOG(INIT, ERROR,
+	       "N9 FW assert timeout — skipping reset trigger\n");
 
 }
 
@@ -10264,8 +10265,9 @@ void wlanCr4CorDumpTimeOut(IN struct ADAPTER *prAdapter,
 		prAdapter->fgCr4CorDumpFileOpend = FALSE;
 	}
 
-	/* Trigger RESET */
-	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_FW_ASSERT_TIMEOUT);
+	/* Log only — skipping reset trigger for stability */
+	DBGLOG(INIT, ERROR,
+	       "CR4 FW assert timeout — skipping reset trigger\n");
 }
 #endif
 

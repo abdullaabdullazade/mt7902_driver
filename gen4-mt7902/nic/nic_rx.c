@@ -1767,9 +1767,8 @@ void nicRxProcessEventPacket(IN struct ADAPTER *prAdapter,
 
 	/* Reset Chip NoAck flag */
 	if (prAdapter->fgIsChipNoAck) {
-		DBGLOG(RX, WARN,
+		DBGLOG(RX, INFO,
 		       "Got response from chip, clear NoAck flag!\n");
-		WARN_ON(TRUE);
 	}
 	prAdapter->ucOidTimeoutCount = 0;
 	prAdapter->fgIsChipNoAck = FALSE;

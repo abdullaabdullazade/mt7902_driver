@@ -451,8 +451,8 @@ struct CMD_INFO *cmdBufAllocateCmdInfo(IN struct ADAPTER
 			if (CHECK_FOR_TIMEOUT(kalGetTimeTick(),
 					     prAdapter->u4CmdAllocStartFailTime,
 					      CFG_CMD_ALLOC_FAIL_TIMEOUT_MS))
-				GL_DEFAULT_RESET_TRIGGER(prAdapter,
-							 RST_CMD_EVT_FAIL);
+				DBGLOG(MEM, ERROR,
+					"CMD alloc timeout — skipping reset trigger\n");
 	}
 
 	return prCmdInfo;

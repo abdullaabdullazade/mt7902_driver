@@ -3198,12 +3198,13 @@ void halProcessAbnormalInterrupt(IN struct ADAPTER *prAdapter)
 	halSetDriverOwn(prAdapter);
 
 	if (prAdapter->u4IntStatus & WHISR_WDT_INT) {
-		DBGLOG(INIT, ERROR, "[SER][L0.5] mcu watch dog timeout!!\n");
-		GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_WDT);
+		DBGLOG(INIT, ERROR,
+		       "[SER][L0.5] MCU WDT timeout — skipping reset trigger\n");
 		return;
 	}
 
-	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_PROCESS_ABNORMAL_INT);
+	DBGLOG(INIT, ERROR,
+	       "[SER] Abnormal interrupt — skipping reset trigger\n");
 }
 
 static void halDefaultProcessSoftwareInterrupt(
@@ -3275,7 +3276,8 @@ void halHwRecoveryTimeout(unsigned long arg)
 
 	DBGLOG(HAL, ERROR, "SER timer Timeout\n");
 
-	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_SER_L1_FAIL);
+	DBGLOG(HAL, ERROR,
+	       "[SER] L1 timeout — skipping reset trigger\n");
 }
 
 void halSetDrvSer(struct ADAPTER *prAdapter)
@@ -3336,7 +3338,8 @@ void halHwRecoveryFromError(IN struct ADAPTER *prAdapter)
 		DBGLOG(HAL, WARN,
 		       "[SER][L1] Bypass L1 reset due to wifi.cfg\n");
 
-		GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_SER_L1_FAIL);
+		DBGLOG(HAL, WARN,
+		       "[SER] Skipping reset trigger for stability\n");
 
 		return;
 	}
