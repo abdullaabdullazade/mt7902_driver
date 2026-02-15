@@ -287,6 +287,57 @@ static irqreturn_t mtk_pci_interrupt(int irq, void *dev_instance)
 
 /*----------------------------------------------------------------------------*/
 /*!
+ * PCIe AER (Advanced Error Reporting) error handlers.
+ * These allow the kernel to automatically recover the device
+ * after PCIe bus errors instead of crashing the system.
+ */
+/*----------------------------------------------------------------------------*/
+static pci_ers_result_t mtk_pci_error_detected(struct pci_dev *pdev,
+					       pci_channel_state_t state)
+{
+	DBGLOG(INIT, WARN, "PCIe error detected, state=%d\n", state);
+
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	pci_disable_device(pdev);
+	return PCI_ERS_RESULT_NEED_RESET;
+}
+
+static pci_ers_result_t mtk_pci_slot_reset(struct pci_dev *pdev)
+{
+	DBGLOG(INIT, INFO, "PCIe slot reset — re-enabling device\n");
+
+	if (pci_enable_device(pdev)) {
+		DBGLOG(INIT, ERROR, "pci_enable_device failed after reset\n");
+		return PCI_ERS_RESULT_DISCONNECT;
+	}
+
+	pci_set_master(pdev);
+	pci_restore_state(pdev);
+
+	/* Power cycle to wake MCU after reset */
+	pci_set_power_state(pdev, PCI_D3hot);
+	msleep(10);
+	pci_set_power_state(pdev, PCI_D0);
+	msleep(50);
+
+	return PCI_ERS_RESULT_RECOVERED;
+}
+
+static void mtk_pci_io_resume(struct pci_dev *pdev)
+{
+	DBGLOG(INIT, INFO, "PCIe I/O resumed after error recovery\n");
+}
+
+static const struct pci_error_handlers mtk_pci_err_handler = {
+	.error_detected = mtk_pci_error_detected,
+	.slot_reset = mtk_pci_slot_reset,
+	.resume = mtk_pci_io_resume,
+};
+
+/*----------------------------------------------------------------------------*/
+/*!
  * \brief This function is a PCIE probe function
  *
  * \param[in] func   pointer to PCIE handle
@@ -700,6 +751,9 @@ uint32_t glRegisterBus(probe_card pfProbe, remove_card pfRemove)
 #if IS_ENABLED(CONFIG_PM)
 	mtk_pci_driver.driver.pm = &mtk_pci_pm_ops;
 #endif
+
+	/* Register PCIe AER error handler for automatic recovery */
+	mtk_pci_driver.err_handler = &mtk_pci_err_handler;
 
 	ret = (pci_register_driver(&mtk_pci_driver) == 0) ?
 		WLAN_STATUS_SUCCESS : WLAN_STATUS_FAILURE;

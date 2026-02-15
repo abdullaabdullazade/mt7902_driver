@@ -1130,20 +1130,45 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 		nicpmSetDriverOwn(prAdapter);
 #endif
 #if !defined(_HIF_USB)
+		/* Retry driver-own with WFSYS reset for cold MCU */
 		if (prAdapter->fgIsFwOwn == TRUE) {
-			DBGLOG(INIT, ERROR, "nicpmSetDriverOwn() failed!\n");
-			u4Status = WLAN_STATUS_FAILURE;
-			eFailReason = DRIVER_OWN_FAIL;
-#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
-			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
-				"[Wi-Fi On] nicpmSetDriverOwn() failed!");
-#endif
-			break;
+			int own_retry;
+
+			for (own_retry = 0; own_retry < 3; own_retry++) {
+				DBGLOG(INIT, WARN,
+				       "nicpmSetDriverOwn failed (attempt %d/3)"
+				       ", retrying...\n", own_retry + 1);
+				kalMsleep(500);
+				nicpmSetDriverOwn(prAdapter);
+				if (prAdapter->fgIsFwOwn == FALSE)
+					break;
+			}
+			if (prAdapter->fgIsFwOwn == TRUE) {
+				DBGLOG(INIT, ERROR,
+				       "nicpmSetDriverOwn failed after 3"
+				       " attempts\n");
+				u4Status = WLAN_STATUS_FAILURE;
+				eFailReason = DRIVER_OWN_FAIL;
+				break;
+			}
 		}
 #endif
 		if (!bAtResetFlow) {
-			/* 4 <1> Initialize the Adapter */
-			u4Status = nicInitializeAdapter(prAdapter);
+			/* 4 <1> Initialize the Adapter with retry */
+			int init_attempt;
+
+			for (init_attempt = 0; init_attempt < 2;
+			     init_attempt++) {
+				u4Status = nicInitializeAdapter(prAdapter);
+				if (u4Status == WLAN_STATUS_SUCCESS)
+					break;
+				if (init_attempt < 1) {
+					DBGLOG(INIT, WARN,
+					       "nicInitializeAdapter failed,"
+					       " retrying in 500ms...\n");
+					kalMsleep(500);
+				}
+			}
 			if (u4Status != WLAN_STATUS_SUCCESS) {
 				DBGLOG(INIT, ERROR,
 					"nicInitializeAdapter failed!\n");
@@ -1155,11 +1180,30 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 
 		wlanOnPostNicInitAdapter(prAdapter, prRegInfo, bAtResetFlow);
 
-		u4Status = wlanWakeUpWiFi(prAdapter);
-		if (u4Status != WLAN_STATUS_SUCCESS) {
-			DBGLOG(INIT, ERROR, "wlanWakeUpWiFi failed!\n");
-			u4Status = WLAN_STATUS_FAILURE;
-			break;
+		/* WiFi wake up with retry */
+		{
+			int wake_retry;
+
+			for (wake_retry = 0; wake_retry < 3; wake_retry++) {
+				u4Status = wlanWakeUpWiFi(prAdapter);
+				if (u4Status == WLAN_STATUS_SUCCESS)
+					break;
+				if (wake_retry < 2) {
+					DBGLOG(INIT, WARN,
+					       "wlanWakeUpWiFi failed"
+					       " (attempt %d/3), retrying"
+					       " in 500ms...\n",
+					       wake_retry + 1);
+					kalMsleep(500);
+				}
+			}
+			if (u4Status != WLAN_STATUS_SUCCESS) {
+				DBGLOG(INIT, ERROR,
+				       "wlanWakeUpWiFi failed after 3"
+				       " attempts!\n");
+				u4Status = WLAN_STATUS_FAILURE;
+				break;
+			}
 		}
 
 		/* 4 <5> HIF SW info initialize */
