@@ -1768,8 +1768,8 @@ uint32_t wlanConfigWifiFunc(IN struct ADAPTER *prAdapter,
 	u4Status = wlanConfigWifiFuncStatus(prAdapter, ucCmdSeqNum);
 
 	if (u4Status != WLAN_STATUS_SUCCESS) {
-		DBGLOG(INIT, ERROR,
-		       "FW_START EVT failed — skipping reset trigger\n");
+		DBGLOG(INIT, INFO, "FW_START EVT failed\n");
+		GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_CMD_EVT_FAIL);
 	} else {
 		DBGLOG(INIT, INFO, "FW_START EVT success!!\n");
 
@@ -2283,21 +2283,8 @@ uint32_t wlanHarvardFormatDownload(IN struct ADAPTER
 	kalFirmwareImageMapping(prAdapter->prGlueInfo, &prFwBuffer,
 				&u4FwSize, eDlIdx);
 	if (prFwBuffer == NULL) {
-		/* Firmware may not be available yet during early boot.
-		 * Retry once after a delay to let firmware subsystem
-		 * catch up (e.g. NVMe rootfs, initramfs transition).
-		 */
-		DBGLOG(INIT, WARN,
-		       "FW[%u] load failed, retrying in 500ms...\n",
-		       eDlIdx);
-		kalMsleep(500);
-		kalFirmwareImageMapping(prAdapter->prGlueInfo, &prFwBuffer,
-					&u4FwSize, eDlIdx);
-		if (prFwBuffer == NULL) {
-			DBGLOG(INIT, ERROR,
-			       "FW[%u] load error after retry!\n", eDlIdx);
-			return WLAN_STATUS_FAILURE;
-		}
+		DBGLOG(INIT, WARN, "FW[%u] load error!\n", eDlIdx);
+		return WLAN_STATUS_FAILURE;
 	}
 
 	wlanGetHarvardTailerInfo(prAdapter, prFwBuffer, u4FwSize,
@@ -2394,16 +2381,7 @@ uint32_t wlanDownloadFW(IN struct ADAPTER *prAdapter)
 		return WLAN_STATUS_FAILURE;
 
 	prChipInfo = prAdapter->chip_info;
-	if (!prChipInfo) {
-		DBGLOG(INIT, ERROR, "chip_info is NULL, abort FW download\n");
-		return WLAN_STATUS_FAILURE;
-	}
-
 	prFwDlOps = prChipInfo->fw_dl_ops;
-	if (!prFwDlOps) {
-		DBGLOG(INIT, ERROR, "fw_dl_ops is NULL, abort FW download\n");
-		return WLAN_STATUS_FAILURE;
-	}
 
 	HAL_ENABLE_FWDL(prAdapter, TRUE);
 

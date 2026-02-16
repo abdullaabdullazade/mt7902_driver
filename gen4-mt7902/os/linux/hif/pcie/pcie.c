@@ -287,57 +287,6 @@ static irqreturn_t mtk_pci_interrupt(int irq, void *dev_instance)
 
 /*----------------------------------------------------------------------------*/
 /*!
- * PCIe AER (Advanced Error Reporting) error handlers.
- * These allow the kernel to automatically recover the device
- * after PCIe bus errors instead of crashing the system.
- */
-/*----------------------------------------------------------------------------*/
-static pci_ers_result_t mtk_pci_error_detected(struct pci_dev *pdev,
-					       pci_channel_state_t state)
-{
-	DBGLOG(INIT, WARN, "PCIe error detected, state=%d\n", state);
-
-	if (state == pci_channel_io_perm_failure)
-		return PCI_ERS_RESULT_DISCONNECT;
-
-	pci_disable_device(pdev);
-	return PCI_ERS_RESULT_NEED_RESET;
-}
-
-static pci_ers_result_t mtk_pci_slot_reset(struct pci_dev *pdev)
-{
-	DBGLOG(INIT, INFO, "PCIe slot reset — re-enabling device\n");
-
-	if (pci_enable_device(pdev)) {
-		DBGLOG(INIT, ERROR, "pci_enable_device failed after reset\n");
-		return PCI_ERS_RESULT_DISCONNECT;
-	}
-
-	pci_set_master(pdev);
-	pci_restore_state(pdev);
-
-	/* Power cycle to wake MCU after reset */
-	pci_set_power_state(pdev, PCI_D3hot);
-	msleep(10);
-	pci_set_power_state(pdev, PCI_D0);
-	msleep(50);
-
-	return PCI_ERS_RESULT_RECOVERED;
-}
-
-static void mtk_pci_io_resume(struct pci_dev *pdev)
-{
-	DBGLOG(INIT, INFO, "PCIe I/O resumed after error recovery\n");
-}
-
-static const struct pci_error_handlers mtk_pci_err_handler = {
-	.error_detected = mtk_pci_error_detected,
-	.slot_reset = mtk_pci_slot_reset,
-	.resume = mtk_pci_io_resume,
-};
-
-/*----------------------------------------------------------------------------*/
-/*!
  * \brief This function is a PCIE probe function
  *
  * \param[in] func   pointer to PCIE handle
@@ -361,61 +310,13 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out;
 	}
 
-	/* PCIe power cycle to wake up cold MCU.
-	 * On some hardware the MT7902 MCU stays in an undefined
-	 * power state after cold boot. Cycling D3hot→D0 forces
-	 * the PCIe endpoint to re-initialize, which wakes up
-	 * the MCU. This is similar to what mt76 does for MT7921.
-	 */
-	pci_set_power_state(pdev, PCI_D3hot);
-	msleep(10);
-	pci_set_power_state(pdev, PCI_D0);
-	msleep(50);
+#if defined(SOC3_0)
+	if ((void *)&mt66xx_driver_data_soc3_0 == (void *)id->driver_data)
+		DBGLOG(INIT, INFO,
+			"[MJ]&mt66xx_driver_data_soc3_0 == id->driver_data\n");
+#endif
 
-	/* Enable bus mastering — required for DMA */
-	pci_set_master(pdev);
-
-	/* Disable ASPM L1 during init — power saving states can
-	 * interfere with MCU communication on cold boot. The FW
-	 * will re-enable ASPM later if supported.
-	 */
-	pci_disable_link_state(pdev,
-		PCIE_LINK_STATE_L1 | PCIE_LINK_STATE_CLKPM);
-
-	/* Validate BAR0 is accessible — if hardware is in latchup
-	 * state, all MMIO reads return 0xFFFFFFFF.
-	 */
-	{
-		u32 val;
-
-		pci_read_config_dword(pdev, PCI_VENDOR_ID, &val);
-		if (val == 0xFFFFFFFF || val == 0) {
-			DBGLOG(INIT, ERROR,
-			       "BAR0 dead (0x%08x) — hardware latchup! "
-			       "Power drain required.\n", val);
-			ret = -ENODEV;
-			goto out;
-		}
-	}
-
-	/* Increase PCIe completion timeout for slow hardware.
-	 * Some BIOS/UEFI sets very aggressive timeouts that
-	 * cause DMA failures on cold boot.
-	 */
-	{
-		u16 devctl2;
-
-		pcie_capability_read_word(pdev, PCI_EXP_DEVCTL2, &devctl2);
-		devctl2 &= ~PCI_EXP_DEVCTL2_COMP_TIMEOUT;
-		devctl2 |= 0x6; /* Range C: 1s to 3.5s */
-		pcie_capability_write_word(pdev, PCI_EXP_DEVCTL2, devctl2);
-	}
-
-	/* Save PCIe config state for recovery (AER, resume).
-	 * This must be done AFTER power cycle + ASPM disable
-	 * so restore brings the device back to a known-good state.
-	 */
-	pci_save_state(pdev);
+	DBGLOG(INIT, INFO, "pci_enable_device done!\n");
 
 	prChipInfo = ((struct mt66xx_hif_driver_data *)
 				id->driver_data)->chip_info;
@@ -427,31 +328,9 @@ static int mtk_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 #else
 	if (pfWlanProbe((void *) pdev,
 		(void *) id->driver_data) != WLAN_STATUS_SUCCESS) {
-
-		/* First probe failed — power cycle and retry once */
-		DBGLOG(INIT, WARN,
-		       "pfWlanProbe failed, power cycling and retrying...\n");
+		DBGLOG(INIT, INFO, "pfWlanProbe fail!call pfWlanRemove()\n");
 		pfWlanRemove();
-
-		/* PCIe power cycle to reset MCU state */
-		pci_set_power_state(pdev, PCI_D3hot);
-		msleep(100);
-		pci_set_power_state(pdev, PCI_D0);
-		msleep(200);
-		pci_restore_state(pdev);
-
-		if (pfWlanProbe((void *) pdev,
-			(void *) id->driver_data) != WLAN_STATUS_SUCCESS) {
-			DBGLOG(INIT, ERROR,
-			       "pfWlanProbe failed after retry!\n");
-			pfWlanRemove();
-			ret = -EPROBE_DEFER;
-		} else {
-			DBGLOG(INIT, INFO,
-			       "pfWlanProbe succeeded on retry!\n");
-			g_fgDriverProbed = TRUE;
-			g_u4DmaMask = prChipInfo->bus_info->u4DmaMask;
-		}
+		ret = -1;
 	} else {
 		g_fgDriverProbed = TRUE;
 		g_u4DmaMask = prChipInfo->bus_info->u4DmaMask;
@@ -487,13 +366,6 @@ static int mtk_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	struct GLUE_INFO *prGlueInfo = NULL;
 	struct BUS_INFO *prBusInfo;
 	uint32_t count = 0;
-	extern unsigned int disable_rpm;
-
-	/* If Runtime PM is disabled by module param, block auto-suspend */
-	if (disable_rpm && PMSG_IS_AUTO(state)) {
-		DBGLOG(HAL, INFO, "Runtime PM disabled, blocking auto-suspend\n");
-		return -EBUSY;
-	}
 	int wait = 0;
 	struct ADAPTER *prAdapter = NULL;
 	uint8_t drv_own_fail = FALSE;
@@ -663,43 +535,13 @@ int mtk_pci_resume(struct pci_dev *pdev)
 	prDebugOps = prGlueInfo->prAdapter->chip_info->prDebugOps;
 
 	pci_set_power_state(pdev, PCI_D0);
-
-
-	/* Force MCU wake after deep sleep — some hardware needs
-	 * a power cycle to re-initialize the MCU after suspend.
-	 */
-	pci_set_power_state(pdev, PCI_D3hot);
-	msleep(10);
-	pci_set_power_state(pdev, PCI_D0);
-	msleep(50);
-
-	/* Restore config space (BARs, MSI, etc.) AFTER power cycle */
 	pci_restore_state(pdev);
-	pci_set_master(pdev);
 
-	/* Disable ASPM L1 to prevent link latency issues */
-	pci_disable_link_state(pdev, PCIE_LINK_STATE_L1);
 
-	/* Driver own — acquire with retry.
-	 * After suspend the MCU may be slow to wake, so
-	 * verify we actually got driver own. If not, do
-	 * a longer power cycle and retry.
-	 */
+
+	/* Driver own */
+	/* Include restore PDMA settings */
 	ACQUIRE_POWER_CONTROL_FROM_PM(prGlueInfo->prAdapter);
-	if (prGlueInfo->prAdapter->fgIsFwOwn == TRUE) {
-		DBGLOG(HAL, WARN,
-		       "Resume: driver own failed, "
-		       "retrying with extended power cycle\n");
-		pci_set_power_state(pdev, PCI_D3hot);
-		msleep(50);
-		pci_set_power_state(pdev, PCI_D0);
-		msleep(200);
-		ACQUIRE_POWER_CONTROL_FROM_PM(prGlueInfo->prAdapter);
-		if (prGlueInfo->prAdapter->fgIsFwOwn == TRUE)
-			DBGLOG(HAL, ERROR,
-			       "Resume: driver own still failed"
-			       " after retry!\n");
-	}
 
 	if (prBusInfo->initPcieInt)
 		prBusInfo->initPcieInt(prGlueInfo);
@@ -821,9 +663,6 @@ uint32_t glRegisterBus(probe_card pfProbe, remove_card pfRemove)
 #if IS_ENABLED(CONFIG_PM)
 	mtk_pci_driver.driver.pm = &mtk_pci_pm_ops;
 #endif
-
-	/* Register PCIe AER error handler for automatic recovery */
-	mtk_pci_driver.err_handler = &mtk_pci_err_handler;
 
 	ret = (pci_register_driver(&mtk_pci_driver) == 0) ?
 		WLAN_STATUS_SUCCESS : WLAN_STATUS_FAILURE;
@@ -999,24 +838,9 @@ u_int8_t glBusInit(void *pvData)
 	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(g_u4DmaMask));
 #endif
 	if (ret != 0) {
-		/* Fallback to 32-bit DMA if configured mask fails */
-		DBGLOG(INIT, WARN,
-		       "DMA mask %u failed, falling back to 32-bit\n",
-		       g_u4DmaMask);
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
-		ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
-#else
-		ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
-#endif
-		if (ret != 0) {
-			DBGLOG(INIT, ERROR,
-			       "set DMA mask failed! errno=%d\n", ret);
-			return FALSE;
-		}
-		g_u4DmaMask = 32;
+		DBGLOG(INIT, INFO, "set DMA mask failed!errno=%d\n", ret);
+		return FALSE;
 	}
-	/* Set coherent DMA mask to match streaming mask */
-	dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(g_u4DmaMask));
 
 	ret = pci_request_regions(pdev, pci_name(pdev));
 	if (ret != 0) {
