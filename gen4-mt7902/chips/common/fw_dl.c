@@ -2407,6 +2407,37 @@ uint32_t wlanDownloadFW(IN struct ADAPTER *prAdapter)
 
 	HAL_ENABLE_FWDL(prAdapter, TRUE);
 
+	/* [PATCH-07] MT7902: ensure MCU is ready before ROM patch download.
+	 * Restart MCU and wait for FW_PWR_ON state to stabilize.
+	 * Without this, cold-boot on some systems can leave the MCU in
+	 * an indeterminate state causing patch download failures.
+	 *
+	 * MT7902_SW_SYNC0 = CONNAC2x_CONN_CFG_ON_BASE (0x7C060000) + 0xF0
+	 * Bit 1 indicates FW_PWR_ON state
+	 */
+	if (prChipInfo->chip_id == 0x7902) {
+		const uint32_t MT7902_CONN_ON_MISC = 0x7C0600F0;
+		uint32_t u4Val = 0;
+		int i;
+
+		/* Clear SW sync register to trigger MCU restart */
+		HAL_MCR_WR(prAdapter, MT7902_CONN_ON_MISC, 0x0);
+
+		/* Poll for FW_PWR_ON state - bit 1 set means MCU ready (up to 1s) */
+		for (i = 0; i < 100; i++) {
+			HAL_MCR_RD(prAdapter, MT7902_CONN_ON_MISC, &u4Val);
+			if (u4Val & BIT(1))
+				break;
+			kalMsleep(10);
+		}
+		if (i == 100)
+			DBGLOG(INIT, WARN,
+			       "MT7902: MCU not ready for firmware download\n");
+		else
+			DBGLOG(INIT, INFO,
+			       "MT7902: MCU ready after %dms\n", i * 10);
+	}
+
 	if (prFwDlOps->downloadPatch)
 		prFwDlOps->downloadPatch(prAdapter);
 

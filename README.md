@@ -2,7 +2,7 @@
 
 Out-of-tree WiFi and Bluetooth drivers for the **MediaTek MT7902** M.2 PCIe wireless card on Linux.
 
-The MT7902 is not supported by the mainline `mt76` kernel driver yet. This repo bundles the two community-maintained driver projects into one place so you can get both WiFi and Bluetooth working with a single install command.
+The MT7902 is not yet fully supported by the mainline `mt76` kernel driver, although MediaTek has started submitting official patches upstream (see [PATCH 01–11/11 series](https://lore.kernel.org/linux-wireless/?q=mt7902), Feb 2026). This repo bundles community-maintained out-of-tree drivers and forward-ports applicable upstream fixes so you can get both WiFi and Bluetooth working today.
 
 | | Status | Notes |
 |-|--------|-------|
@@ -157,6 +157,30 @@ Should work on other MT7902-based PCIe cards. Minimum kernel: 5.4.
 |--------|--------|------|-----------|
 | Arch Linux (x86_64) | 6.18.9-arch1-2 | ✅ Working | ✅ Working |
 
+## Upstream Patch Integration
+
+MediaTek officially submitted an 11-patch series for MT7902 to the `linux-wireless` mailing list on 2026-02-19 (author: `sean.wang@kernel.org`). The applicable fixes have been forward-ported into this out-of-tree driver:
+
+| Patch | Description | Status |
+|-------|-------------|--------|
+| [PATCH 03/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-3-sean.wang@kernel.org/) | irq_map quirk (mutable copy) | Architecture differs — not applied |
+| [PATCH 04/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-4-sean.wang@kernel.org/) | MT7902e DMA layout | ✅ Already correct in gen4 driver |
+| [PATCH 05/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-5-sean.wang@kernel.org/) | Mark MT7902 as hw txp | ✅ Already enabled in gen4 driver |
+| [PATCH 06/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-6-sean.wang@kernel.org/) | PSE buffer underflow barrier | ✅ **Applied** — `mgmt/rlm_domain.c` |
+| [PATCH 07/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-7-sean.wang@kernel.org/) | Ensure MCU ready before ROM patch download | ✅ **Applied** — `chips/common/fw_dl.c` |
+| [PATCH 08/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-8-sean.wang@kernel.org/) | MT7902 MCU support + firmware paths | ✅ Already present in gen4 driver |
+| [PATCH 09/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-9-sean.wang@kernel.org/) | WFDMA prefetch configuration | ✅ Already correct in gen4 driver |
+| [PATCH 10/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-10-sean.wang@kernel.org/) | MT7902 PCIe device support | Architecture differs — not applied |
+| [PATCH 11/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-11-sean.wang@kernel.org/) | MT7902 SDIO device support | Architecture differs — not applied |
+
+### Key fixes applied
+
+**PATCH-07 — MCU ready check** (`chips/common/fw_dl.c`)  
+Before downloading the ROM patch, the driver now resets the MCU sync register and polls for the `FW_PWR_ON` bit (up to 1 s). This prevents cold-boot firmware download failures on affected systems.
+
+**PATCH-06 — PSE barrier read** (`mgmt/rlm_domain.c`)  
+After sending large txpower MCU commands, a dummy read from the PSE base register (`0x820c8000`) is performed. This prevents a hardware PSE buffer underflow that could silently corrupt MCU command delivery.
+
 ## Upstream sync
 
 A GitHub Actions workflow runs daily and checks both upstream repos for new commits. If anything changed, it opens a pull request automatically. You can also trigger it manually from the Actions tab.
@@ -169,7 +193,7 @@ This project wouldn't exist without the work of:
 
 - **[OnlineLearningTutorials](https://github.com/OnlineLearningTutorials)** — Bluetooth driver and firmware ([mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp)). Patched `btusb`/`btmtk` for MT7902 support and provides all the firmware files.
 
-- **[goracle](https://github.com/goracle)** — Experimental driver fork ([gen4-mt7902](https://github.com/goracle/gen4-mt7902)) with stability improvements, PCIe latchup recovery docs, and AIS FSM rewrites.
+- **[MediaTek / sean.wang](https://lore.kernel.org/linux-wireless/?q=mt7902)** — Official upstream MT7902 patch series for the `mt76` kernel driver (Feb 2026); key fixes forward-ported into this driver.
 
 Community discussion happens on [Discord](https://discord.gg/JGhjAxEFhz).
 

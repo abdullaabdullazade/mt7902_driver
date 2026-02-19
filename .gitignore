@@ -13,3 +13,4 @@
 Module.symvers
 modules.order
 .cache.mk
+scrape_patches.py
