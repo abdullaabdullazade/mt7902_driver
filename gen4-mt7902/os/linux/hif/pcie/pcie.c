@@ -680,26 +680,9 @@ int mtk_pci_resume(struct pci_dev *pdev)
 	/* Disable ASPM L1 to prevent link latency issues */
 	pci_disable_link_state(pdev, PCIE_LINK_STATE_L1);
 
-	/* Driver own — acquire with retry.
-	 * After suspend the MCU may be slow to wake, so
-	 * verify we actually got driver own. If not, do
-	 * a longer power cycle and retry.
-	 */
+	/* Driver own */
+	/* Include restore PDMA settings */
 	ACQUIRE_POWER_CONTROL_FROM_PM(prGlueInfo->prAdapter);
-	if (prGlueInfo->prAdapter->fgIsFwOwn == TRUE) {
-		DBGLOG(HAL, WARN,
-		       "Resume: driver own failed, "
-		       "retrying with extended power cycle\n");
-		pci_set_power_state(pdev, PCI_D3hot);
-		msleep(50);
-		pci_set_power_state(pdev, PCI_D0);
-		msleep(200);
-		ACQUIRE_POWER_CONTROL_FROM_PM(prGlueInfo->prAdapter);
-		if (prGlueInfo->prAdapter->fgIsFwOwn == TRUE)
-			DBGLOG(HAL, ERROR,
-			       "Resume: driver own still failed"
-			       " after retry!\n");
-	}
 
 	if (prBusInfo->initPcieInt)
 		prBusInfo->initPcieInt(prGlueInfo);

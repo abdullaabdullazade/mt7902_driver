@@ -1691,7 +1691,6 @@ uint32_t wlanCheckWifiFunc(IN struct ADAPTER *prAdapter,
 			   IN u_int8_t fgRdyChk)
 {
 	u_int8_t fgResult, fgTimeout;
-	u_int8_t fgWfsysRstDone = FALSE;
 	uint32_t u4Result = 0;
 	uint32_t u4Status, u4StartTime, u4CurTime;
 	const uint32_t ready_bits =
@@ -1748,35 +1747,11 @@ uint32_t wlanCheckWifiFunc(IN struct ADAPTER *prAdapter,
 			break;
 		} else if (fgTimeout) {
 			HAL_WIFI_FUNC_GET_STATUS(prAdapter, u4Result);
-			DBGLOG(INIT, WARN,
-			       "Waiting for %s: Timeout, Status=0x%08x\n",
-			       fgRdyChk ? "ready bit" : "power off",
-			       u4Result);
-
-			/* Attempt WFSYS L0.5 reset once to revive
-			 * a stuck MCU. If we already did one reset,
-			 * give up — the hardware is truly dead.
-			 */
-			if (fgRdyChk && !fgWfsysRstDone) {
-				DBGLOG(INIT, WARN,
-				       "MCU not responding — "
-				       "attempting WFSYS reset\n");
-				HAL_TOGGLE_WFSYS_RST(prAdapter);
-				kalMsleep(100);
-				/* Reset the timer to give MCU a fresh
-				 * polling window after hardware reset.
-				 */
-				u4StartTime = kalGetTimeTick();
-				fgTimeout = FALSE;
-				fgWfsysRstDone = TRUE;
-				continue;
-			}
-
 			DBGLOG(INIT, ERROR,
-			       "MCU not responding after %s,"
-			       " giving up\n",
-			       fgWfsysRstDone ? "WFSYS reset"
-					      : "timeout");
+			       "Waiting for %s: Timeout, Status=0x%08x\n",
+			       fgRdyChk ? "ready bit" : "power off", u4Result);
+			DBGLOG(INIT, ERROR,
+			       "MCU not responding (cold boot?), skip reset trigger\n");
 			u4Status = WLAN_STATUS_FAILURE;
 			break;
 		}
