@@ -697,8 +697,8 @@
  * Flags and Parameters for CMD/RESPONSE
  *------------------------------------------------------------------------------
  */
-#define CFG_RESPONSE_POLLING_TIMEOUT            4000  /* increased for cold-MCU */
-#define CFG_RESPONSE_POLLING_DELAY              10    /* reduced CPU load */
+#define CFG_RESPONSE_POLLING_TIMEOUT            1000
+#define CFG_RESPONSE_POLLING_DELAY              5
 #define CFG_CMD_ALLOC_FAIL_TIMEOUT_MS           (6000)
 
 /*------------------------------------------------------------------------------

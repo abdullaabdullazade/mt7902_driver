@@ -1109,6 +1109,10 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 						"nicAllocateAdapterMemory Error!\n");
 				u4Status = WLAN_STATUS_FAILURE;
 				eFailReason = ALLOC_ADAPTER_MEM_FAIL;
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+				mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+						"[Wi-Fi On] nicAllocateAdapterMemory Error!");
+#endif
 				break;
 			}
 
@@ -1126,45 +1130,20 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 		nicpmSetDriverOwn(prAdapter);
 #endif
 #if !defined(_HIF_USB)
-		/* Retry driver-own with WFSYS reset for cold MCU */
 		if (prAdapter->fgIsFwOwn == TRUE) {
-			int own_retry;
-
-			for (own_retry = 0; own_retry < 3; own_retry++) {
-				DBGLOG(INIT, WARN,
-				       "nicpmSetDriverOwn failed (attempt %d/3)"
-				       ", retrying...\n", own_retry + 1);
-				kalMsleep(500);
-				nicpmSetDriverOwn(prAdapter);
-				if (prAdapter->fgIsFwOwn == FALSE)
-					break;
-			}
-			if (prAdapter->fgIsFwOwn == TRUE) {
-				DBGLOG(INIT, ERROR,
-				       "nicpmSetDriverOwn failed after 3"
-				       " attempts\n");
-				u4Status = WLAN_STATUS_FAILURE;
-				eFailReason = DRIVER_OWN_FAIL;
-				break;
-			}
+			DBGLOG(INIT, ERROR, "nicpmSetDriverOwn() failed!\n");
+			u4Status = WLAN_STATUS_FAILURE;
+			eFailReason = DRIVER_OWN_FAIL;
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+				"[Wi-Fi On] nicpmSetDriverOwn() failed!");
+#endif
+			break;
 		}
 #endif
 		if (!bAtResetFlow) {
-			/* 4 <1> Initialize the Adapter with retry */
-			int init_attempt;
-
-			for (init_attempt = 0; init_attempt < 2;
-			     init_attempt++) {
-				u4Status = nicInitializeAdapter(prAdapter);
-				if (u4Status == WLAN_STATUS_SUCCESS)
-					break;
-				if (init_attempt < 1) {
-					DBGLOG(INIT, WARN,
-					       "nicInitializeAdapter failed,"
-					       " retrying in 500ms...\n");
-					kalMsleep(500);
-				}
-			}
+			/* 4 <1> Initialize the Adapter */
+			u4Status = nicInitializeAdapter(prAdapter);
 			if (u4Status != WLAN_STATUS_SUCCESS) {
 				DBGLOG(INIT, ERROR,
 					"nicInitializeAdapter failed!\n");
@@ -1176,88 +1155,37 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 
 		wlanOnPostNicInitAdapter(prAdapter, prRegInfo, bAtResetFlow);
 
-		/* WiFi wake up with retry */
-		{
-			int wake_retry;
-
-			for (wake_retry = 0; wake_retry < 3; wake_retry++) {
-				u4Status = wlanWakeUpWiFi(prAdapter);
-				if (u4Status == WLAN_STATUS_SUCCESS)
-					break;
-				if (wake_retry < 2) {
-					DBGLOG(INIT, WARN,
-					       "wlanWakeUpWiFi failed"
-					       " (attempt %d/3), retrying"
-					       " in 500ms...\n",
-					       wake_retry + 1);
-					kalMsleep(500);
-				}
-			}
-			if (u4Status != WLAN_STATUS_SUCCESS) {
-				DBGLOG(INIT, ERROR,
-				       "wlanWakeUpWiFi failed after 3"
-				       " attempts!\n");
-				u4Status = WLAN_STATUS_FAILURE;
-				break;
-			}
+		u4Status = wlanWakeUpWiFi(prAdapter);
+		if (u4Status != WLAN_STATUS_SUCCESS) {
+			DBGLOG(INIT, ERROR, "wlanWakeUpWiFi failed!\n");
+			u4Status = WLAN_STATUS_FAILURE;
+			break;
 		}
 
-		/* 4 <5> HIF SW info initialize with retry */
-		{
-			int hif_retry;
-
-			for (hif_retry = 0; hif_retry < 2; hif_retry++) {
-				if (halHifSwInfoInit(prAdapter))
-					break;
-				if (hif_retry < 1) {
-					DBGLOG(INIT, WARN,
-					       "halHifSwInfoInit failed,"
-					       " retrying in 300ms...\n");
-					kalMsleep(300);
-				}
-			}
-			if (!halHifSwInfoInit(prAdapter) && hif_retry >= 2) {
-				DBGLOG(INIT, ERROR,
-				       "halHifSwInfoInit failed!\n");
-				u4Status = WLAN_STATUS_FAILURE;
-				eFailReason = INIT_HIFINFO_FAIL;
-				break;
-			}
+		/* 4 <5> HIF SW info initialize */
+		if (!halHifSwInfoInit(prAdapter)) {
+			DBGLOG(INIT, ERROR, "halHifSwInfoInit failed!\n");
+			u4Status = WLAN_STATUS_FAILURE;
+			eFailReason = INIT_HIFINFO_FAIL;
+			break;
 		}
 
 		/* 4 <6> Enable HIF cut-through to N9 mode, not visiting CR4 */
 		HAL_ENABLE_FWDL(prAdapter, TRUE);
 
-		/* 4 <7> Get ECO Version with retry */
-		{
-			int eco_retry;
-
-			for (eco_retry = 0; eco_retry < 2; eco_retry++) {
-				if (wlanSetChipEcoInfo(prAdapter)
-				    == WLAN_STATUS_SUCCESS)
-					break;
-				if (eco_retry < 1) {
-					DBGLOG(INIT, WARN,
-					       "wlanSetChipEcoInfo failed,"
-					       " retrying in 300ms...\n");
-					kalMsleep(300);
-				}
-			}
-			if (wlanSetChipEcoInfo(prAdapter)
-			    != WLAN_STATUS_SUCCESS && eco_retry >= 2) {
-				DBGLOG(INIT, ERROR,
-				       "wlanSetChipEcoInfo failed!\n");
-				u4Status = WLAN_STATUS_FAILURE;
-				eFailReason = SET_CHIP_ECO_INFO_FAIL;
-				break;
-			}
+		/* 4 <7> Get ECO Version */
+		if (wlanSetChipEcoInfo(prAdapter) != WLAN_STATUS_SUCCESS) {
+			DBGLOG(INIT, ERROR, "wlanSetChipEcoInfo failed!\n");
+			u4Status = WLAN_STATUS_FAILURE;
+			eFailReason = SET_CHIP_ECO_INFO_FAIL;
+			break;
 		}
 
 		/* recheck Asic capability depends on ECO version */
 		wlanCheckAsicCap(prAdapter);
 
 #if CFG_ENABLE_FW_DOWNLOAD
-		/* 4 <8> FW/patch download with retry for cold MCU */
+		/* 4 <8> FW/patch download */
 
 		/* 1. disable interrupt, download is done by polling mode only
 		 */
@@ -1266,32 +1194,14 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 		/* 2. Initialize Tx Resource to fw download state */
 		nicTxInitResetResource(prAdapter);
 
-		/* Retry FW download — cold MCU may not be ready to
-		 * accept firmware commands on first attempt.
-		 */
-		{
-			int fw_retry;
-
-			for (fw_retry = 0; fw_retry < 3; fw_retry++) {
-				u4Status = wlanDownloadFW(prAdapter);
-				if (u4Status == WLAN_STATUS_SUCCESS)
-					break;
-
-				if (fw_retry < 2) {
-					DBGLOG(INIT, WARN,
-					       "FW download failed (attempt %d/3),"
-					       " retrying in 1s...\n",
-					       fw_retry + 1);
-					kalMsleep(1000);
-					nicTxInitResetResource(prAdapter);
-				} else {
-					DBGLOG(INIT, ERROR,
-					       "FW download failed after 3 attempts\n");
-					eFailReason = RAM_CODE_DOWNLOAD_FAIL;
-				}
-			}
-			if (u4Status != WLAN_STATUS_SUCCESS)
-				break;
+		u4Status = wlanDownloadFW(prAdapter);
+		if (u4Status != WLAN_STATUS_SUCCESS) {
+			eFailReason = RAM_CODE_DOWNLOAD_FAIL;
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+				"[Wi-Fi On] [Ram code download fail!]");
+#endif
+			break;
 		}
 #endif
 
@@ -1703,8 +1613,12 @@ uint32_t wlanCheckWifiFunc(IN struct ADAPTER *prAdapter,
 			DBGLOG(INIT, ERROR,
 			       "Waiting for %s: Timeout, Status=0x%08x\n",
 			       fgRdyChk ? "ready bit" : "power off", u4Result);
-			DBGLOG(INIT, ERROR,
-			       "MCU not responding (cold boot?), skip reset trigger\n");
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+				"[Wi-Fi] [Read WCIR_WLAN_READY fail!]");
+#else
+			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_CR_ACCESS_FAIL);
+#endif
 			u4Status = WLAN_STATUS_FAILURE;
 			break;
 		}
@@ -2800,8 +2714,8 @@ void wlanReleasePendingOid(IN struct ADAPTER *prAdapter,
 				  SLAVENORESP);
 #endif
 
-				DBGLOG(INIT, ERROR,
-				       "OID timeout — skipping reset trigger\n");
+				GL_DEFAULT_RESET_TRIGGER(prAdapter,
+							 RST_OID_TIMEOUT);
 			}
 
 			prAdapter->fgIsChipNoAck = TRUE;
@@ -3340,8 +3254,7 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 	struct CMD_NIC_POWER_CTRL *pNicPwrCtrl;
 	struct mt66xx_chip_info *prChipInfo;
 	uint16_t cmd_size;
-	extern unsigned int cmd_timeout_ms;
-	uint16_t u2MaxWait = cmd_timeout_ms;
+	uint16_t u2MaxWait = NIC_TX_RESOURCE_POLLING_DELAY_MSEC * 1000;
 
 	ASSERT(prAdapter);
 
@@ -3354,6 +3267,10 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 	prCmdInfo = cmdBufAllocateCmdInfo(prAdapter, cmd_size);
 	if (!prCmdInfo) {
 		DBGLOG(INIT, ERROR, "Allocate CMD_INFO_T ==> FAILED.\n");
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+		mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+			"[Wi-Fi Off] Allocate CMD_INFO_T ==> FAILED.");
+#endif
 		return WLAN_STATUS_FAILURE;
 	}
 
@@ -3421,6 +3338,10 @@ uint32_t wlanSendNicPowerCtrlCmd(IN struct ADAPTER
 		     ucTC) != WLAN_STATUS_SUCCESS) {
 		DBGLOG(INIT, ERROR,
 		       "Fail to transmit CMD_NIC_POWER_CTRL command\n");
+#if CFG_ENABLE_KEYWORD_EXCEPTION_MECHANISM
+			mtk_wcn_wmt_assert_keyword(WMTDRV_TYPE_WIFI,
+				"[Wi-Fi Off] Fail to transmit CMD_NIC_POWER_CTRL command");
+#endif
 		status = WLAN_STATUS_FAILURE;
 	}
 
@@ -10248,9 +10169,8 @@ void wlanN9CorDumpTimeOut(IN struct ADAPTER *prAdapter,
 		prAdapter->fgN9CorDumpFileOpend = FALSE;
 	}
 
-	/* Log only — skipping reset trigger for stability */
-	DBGLOG(INIT, ERROR,
-	       "N9 FW assert timeout — skipping reset trigger\n");
+	/* Trigger RESET */
+	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_FW_ASSERT_TIMEOUT);
 
 }
 
@@ -10265,9 +10185,8 @@ void wlanCr4CorDumpTimeOut(IN struct ADAPTER *prAdapter,
 		prAdapter->fgCr4CorDumpFileOpend = FALSE;
 	}
 
-	/* Log only — skipping reset trigger for stability */
-	DBGLOG(INIT, ERROR,
-	       "CR4 FW assert timeout — skipping reset trigger\n");
+	/* Trigger RESET */
+	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_FW_ASSERT_TIMEOUT);
 }
 #endif
 
@@ -12831,17 +12750,9 @@ wlanShiftCSI(
 uint32_t wlanWakeUpWiFi(IN struct ADAPTER *prAdapter)
 {
 	u_int8_t fgReady;
-	struct mt66xx_chip_info *prChipInfo;
 
 	if (!prAdapter)
 		return WLAN_STATUS_FAILURE;
-
-	prChipInfo = prAdapter->chip_info;
-	if (!prChipInfo) {
-		DBGLOG(INIT, ERROR,
-		       "wlanWakeUpWiFi: chip_info is NULL!\n");
-		return WLAN_STATUS_FAILURE;
-	}
 
 	HAL_WIFI_FUNC_READY_CHECK(prAdapter, prChipInfo->sw_ready_bits,
 			&fgReady);
