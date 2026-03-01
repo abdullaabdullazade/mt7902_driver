@@ -71,7 +71,6 @@
  */
 #include "precomp.h"
 
-#include "hal_wfsys_reset_mt7961.h"
 #include "hif_pdma.h"
 
 #include <linux/mm.h>
@@ -192,7 +191,6 @@ u_int8_t halVerifyChipID(IN struct ADAPTER *prAdapter)
 	struct mt66xx_chip_info *prChipInfo;
 	struct BUS_INFO *prBusInfo;
 	uint32_t u4CIR = 0;
-	int retry;
 
 	ASSERT(prAdapter);
 
@@ -202,35 +200,10 @@ u_int8_t halVerifyChipID(IN struct ADAPTER *prAdapter)
 	if (prAdapter->fgIsReadRevID || !prChipInfo->should_verify_chip_id)
 		return TRUE;
 
-	/* Retry chip ID read — cold MCU may return garbage on first read.
-	 * 0xFFFFFFFF means BAR0 is dead (hardware latchup).
-	 */
-	for (retry = 0; retry < 5; retry++) {
-		HAL_MCR_RD(prAdapter,
-			   prBusInfo->top_cfg_base + TOP_HW_CONTROL, &u4CIR);
+	HAL_MCR_RD(prAdapter, prBusInfo->top_cfg_base + TOP_HW_CONTROL, &u4CIR);
 
-		DBGLOG(INIT, INFO,
-		       "WCIR_CHIP_ID = 0x%x, chip_id = 0x%x (attempt %d)\n",
-		       (uint32_t)(u4CIR & WCIR_CHIP_ID),
-		       prChipInfo->chip_id, retry + 1);
-
-		/* BAR0 dead — no point retrying */
-		if (u4CIR == 0xFFFFFFFF) {
-			DBGLOG(INIT, ERROR,
-			       "BAR0 reads 0xFFFFFFFF — hardware latchup! "
-			       "Power drain required.\n");
-			return FALSE;
-		}
-
-		if ((u4CIR & WCIR_CHIP_ID) == prChipInfo->chip_id)
-			break;
-
-		if (retry < 4) {
-			DBGLOG(INIT, WARN,
-			       "Chip ID mismatch, retrying in 200ms...\n");
-			kalMsleep(200);
-		}
-	}
+	DBGLOG(INIT, INFO, "WCIR_CHIP_ID = 0x%x, chip_id = 0x%x\n",
+	       (uint32_t)(u4CIR & WCIR_CHIP_ID), prChipInfo->chip_id);
 
 	if ((u4CIR & WCIR_CHIP_ID) != prChipInfo->chip_id)
 		return FALSE;
@@ -407,8 +380,7 @@ static u_int8_t halDriverOwnCheckCR4(struct ADAPTER *prAdapter)
 			       LP_OWN_BACK_FAILED_LOG_SKIP_MS);
 			fgStatus = FALSE;
 
-			DBGLOG(INIT, ERROR,
-			       "CR4 not ready, skip reset to prevent panic\n");
+			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_DRV_OWN_FAIL);
 
 			break;
 		}
@@ -454,12 +426,11 @@ static void halDriverOwnTimeout(struct ADAPTER *prAdapter,
 		prAdapter->u4OwnFailedLogCount++;
 		if (prAdapter->u4OwnFailedLogCount >
 		    LP_OWN_BACK_FAILED_RESET_CNT) {
-			if (prChipDbgOps && prChipDbgOps->showCsrInfo)
+			if (prChipDbgOps->showCsrInfo)
 				prChipDbgOps->showCsrInfo(prAdapter);
 
-			DBGLOG(INIT, ERROR,
-			       "LP own back failed too many times, "
-			       "skip reset trigger to prevent panic\n");
+			/* Trigger RESET */
+			GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_DRV_OWN_FAIL);
 		}
 		GET_CURRENT_SYSTIME(&prAdapter->rLastOwnFailedLogTime);
 	}
@@ -673,71 +644,16 @@ u_int8_t halSetDriverOwn(IN struct ADAPTER *prAdapter)
 			prBusInfo->checkDummyReg(prAdapter->prGlueInfo);
 	} else {
 		DBGLOG(INIT, WARN, "DRIVER OWN Fail!\n");
-		if (prChipInfo->prDebugOps) {
-			if (prChipInfo->prDebugOps->show_mcu_debug_info)
-				prChipInfo->prDebugOps->show_mcu_debug_info(
-					prAdapter, NULL, 0,
-					DBG_MCU_DBG_ALL, NULL);
+		if (prChipInfo->prDebugOps->show_mcu_debug_info)
+			prChipInfo->prDebugOps->show_mcu_debug_info(prAdapter, NULL, 0,
+				DBG_MCU_DBG_ALL, NULL);
 #if (CFG_SUPPORT_DEBUG_SOP == 1)
-			if (prChipInfo->prDebugOps->show_debug_sop_info)
-				prChipInfo->prDebugOps->show_debug_sop_info(
-					prAdapter, SLAVENORESP);
+		if (prChipInfo->prDebugOps->show_debug_sop_info)
+			prChipInfo->prDebugOps->show_debug_sop_info(prAdapter,
+				SLAVENORESP);
 #endif
-			if (prChipInfo->prDebugOps->showCsrInfo)
-				prChipInfo->prDebugOps->showCsrInfo(prAdapter);
-		}
-
-#if CFG_CHIP_RESET_SUPPORT
-		/* TRUE MCU BYPASS: Force WFSYS hard reset to wake cold MCU.
-		 * When LP_OWN handshake fails, the MCU is likely in a cold/
-		 * dead state. We assert+de-assert the WFSYS reset via CBTOP
-		 * RGU registers to force it to reinitialize, then retry.
-		 */
-		DBGLOG(INIT, WARN,
-		       "Attempting WFSYS hard reset to wake cold MCU...\n");
-
-		/* Assert WFSYS reset */
-		mt7961HalCbtopRguWfRst(prAdapter, TRUE);
-		kalMsleep(50);
-		/* De-assert WFSYS reset */
-		mt7961HalCbtopRguWfRst(prAdapter, FALSE);
-		kalMsleep(100);
-
-		/* Poll until MCU is ready */
-		if (mt7961HalPollWfsysSwInitDone(prAdapter)) {
-			DBGLOG(INIT, INFO,
-			       "MCU woke up after WFSYS reset! "
-			       "Retrying LP_OWN...\n");
-
-			/* Retry LP_OWN handshake */
-			HAL_LP_OWN_CLR(prAdapter, &fgResult);
-			fgResult = FALSE;
-			i = 0;
-			u4CurrTick = kalGetTimeTick();
-			while (1) {
-				HAL_LP_OWN_RD(prAdapter, &fgResult);
-				fgTimeout = ((kalGetTimeTick() - u4CurrTick)
-					> LP_OWN_BACK_TOTAL_DELAY_MS);
-				if (fgResult || fgTimeout)
-					break;
-				if ((i & (LP_OWN_BACK_LOOP_DELAY_MS - 1)) == 0)
-					kalUdelay(LP_OWN_BACK_LOOP_DELAY_MIN_US);
-				i++;
-			}
-			if (fgResult) {
-				prAdapter->fgIsFwOwn = FALSE;
-				fgStatus = TRUE;
-				DBGLOG(INIT, INFO,
-				       "DRIVER OWN success after WFSYS reset!\n");
-			} else {
-				DBGLOG(INIT, ERROR,
-				       "DRIVER OWN still failed after WFSYS reset\n");
-			}
-		} else {
-			DBGLOG(INIT, ERROR,
-			       "WFSYS reset failed — MCU did not wake up\n");
-		}
-#endif
+		if (prChipInfo->prDebugOps->showCsrInfo)
+			prChipInfo->prDebugOps->showCsrInfo(prAdapter);
 	}
 
 	KAL_REC_TIME_END();
@@ -3198,13 +3114,12 @@ void halProcessAbnormalInterrupt(IN struct ADAPTER *prAdapter)
 	halSetDriverOwn(prAdapter);
 
 	if (prAdapter->u4IntStatus & WHISR_WDT_INT) {
-		DBGLOG(INIT, ERROR,
-		       "[SER][L0.5] MCU WDT timeout — skipping reset trigger\n");
+		DBGLOG(INIT, ERROR, "[SER][L0.5] mcu watch dog timeout!!\n");
+		GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_WDT);
 		return;
 	}
 
-	DBGLOG(INIT, ERROR,
-	       "[SER] Abnormal interrupt — skipping reset trigger\n");
+	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_PROCESS_ABNORMAL_INT);
 }
 
 static void halDefaultProcessSoftwareInterrupt(
@@ -3276,8 +3191,7 @@ void halHwRecoveryTimeout(unsigned long arg)
 
 	DBGLOG(HAL, ERROR, "SER timer Timeout\n");
 
-	DBGLOG(HAL, ERROR,
-	       "[SER] L1 timeout — skipping reset trigger\n");
+	GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_SER_L1_FAIL);
 }
 
 void halSetDrvSer(struct ADAPTER *prAdapter)
@@ -3338,8 +3252,7 @@ void halHwRecoveryFromError(IN struct ADAPTER *prAdapter)
 		DBGLOG(HAL, WARN,
 		       "[SER][L1] Bypass L1 reset due to wifi.cfg\n");
 
-		DBGLOG(HAL, WARN,
-		       "[SER] Skipping reset trigger for stability\n");
+		GL_DEFAULT_RESET_TRIGGER(prAdapter, RST_SER_L1_FAIL);
 
 		return;
 	}
