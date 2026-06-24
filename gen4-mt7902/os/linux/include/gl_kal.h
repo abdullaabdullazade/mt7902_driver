@@ -1048,7 +1048,7 @@ int8_t atoi(uint8_t ch);
 #define kalBreakPoint() \
 do { \
 	WARN_ON(1); \
-	dump_stack(); \
+	panic("Oops"); \
 } while (0)
 
 #if CFG_ENABLE_AEE_MSG
