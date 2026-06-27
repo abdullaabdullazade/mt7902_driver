@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2023 MediaTek Inc. */
 
 #include <linux/module.h>
@@ -151,7 +151,7 @@ void mt792x_stop(struct ieee80211_hw *hw, bool suspend)
 	cancel_work_sync(&dev->reset_work);
 	mt76_connac_free_pending_tx_skbs(&dev->pm, NULL);
 
-	if (is_mt7921(&dev->mt76)) {
+	if (is_connac2(&dev->mt76)) {
 		mt792x_mutex_acquire(dev);
 		mt76_connac_mcu_set_mac_enable(&dev->mt76, 0, false, false);
 		mt792x_mutex_release(dev);
@@ -924,34 +924,16 @@ int mt792xe_mcu_fw_pmctrl(struct mt792x_dev *dev)
 }
 EXPORT_SYMBOL_GPL(mt792xe_mcu_fw_pmctrl);
 
-static int
-mt792x_firmware_state(struct mt792x_dev *dev, bool wa)
-{
-	u32 state = FIELD_PREP(MT_TOP_MISC_FW_STATE,
-			       wa ? FW_STATE_RDY : FW_STATE_FW_DOWNLOAD);
-
-	if (!mt76_poll_msec(dev, MT_TOP_MISC, MT_TOP_MISC_FW_STATE,
-			    state, 1000)) {
-		dev_err(dev->mt76.dev, "Timeout for initializing firmware\n");
-		return -EIO;
-	}
-	return 0;
-}
-
 int mt792x_load_firmware(struct mt792x_dev *dev)
 {
 	int ret;
-   /* make sure fw is download state */
-	if (mt792x_firmware_state(dev, false)) {
-		/* restart firmware once */
-		mt76_connac_mcu_restart(&dev->mt76);
-		ret = mt792x_firmware_state(dev, false);
-		if (ret) {
-			dev_err(dev->mt76.dev,
-				"Firmware is not ready for download\n");
-			return ret;
-		}
-	}
+
+	mt76_connac_mcu_restart(&dev->mt76);
+
+	if (!mt76_poll_msec(dev, MT_CONN_ON_MISC, MT_TOP_MISC_FW_STATE,
+			    MT_TOP_MISC2_FW_PWR_ON, 1000))
+		dev_warn(dev->mt76.dev,
+			 "MCU is not ready for firmware download\n");
 
 	ret = mt76_connac2_load_patch(&dev->mt76, mt792x_patch_name(dev));
 	if (ret)
