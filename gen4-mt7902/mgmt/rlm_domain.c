@@ -6449,17 +6449,6 @@ void rlmDomainSendPwrLimitCmd(struct ADAPTER *prAdapter)
 				NULL,	/* pvSetQueryBuffer */
 				0	/* u4SetQueryBufferLen */
 		    );
-
-		/* [PATCH-06] MT7902: read PSE base CR after large MCU cmd to
-		 * avoid PSE buffer underflow. This is a HW quirk on MT7902
-		 * where back-pressure from large MCU commands can cause PSE
-		 * FIFO underflow without a dummy read barrier.
-		 */
-		if (prAdapter->chip_info->chip_id == 0x7902) {
-			uint32_t u4PseVal = 0;
-
-			HAL_MCR_RD(prAdapter, 0x820c8000, &u4PseVal);
-		}
 	} else {
 		DBGLOG(RLM, ERROR, "Domain: illegal power limit table\n");
 	}
