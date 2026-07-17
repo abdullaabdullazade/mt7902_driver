@@ -431,6 +431,53 @@ install_bt() {
     cd "$bt_dir"
     make -C /lib/modules/$(uname -r)/build/ M=$(pwd) modules
 
+    # Install firmware before loading the modules — btmtk needs it present
+    # at modprobe time, not after. Doing this after modprobe (as before)
+    # meant a fresh install always failed firmware setup on first load.
+    step "Installing Bluetooth firmware"
+    local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
+    if [ -d "$fw" ]; then
+        mkdir -p "${FW_DIR}/mediatek"
+        for f in "$fw"/BT_*.bin.zst "$fw"/BT_*.bin; do
+            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
+        done
+    fi
+    ok "BT firmware copied"
+
+    # Sign modules if Secure Boot is enabled, using whatever MOK key is
+    # already enrolled (e.g. the one DKMS generates for other out-of-tree
+    # drivers). Without this, modprobe fails with "Key was rejected by
+    # service" and gives no hint about why.
+    if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+        step "Signing modules for Secure Boot"
+        local sign_file=""
+        for candidate in \
+            "/usr/src/linux-headers-$(uname -r)/scripts/sign-file" \
+            "/lib/modules/$(uname -r)/build/scripts/sign-file"; do
+            [ -x "$candidate" ] && { sign_file="$candidate"; break; }
+        done
+
+        local mok_key="" mok_cert=""
+        if [ -f "/var/lib/shim-signed/mok/MOK.priv" ] && [ -f "/var/lib/shim-signed/mok/MOK.der" ]; then
+            mok_key="/var/lib/shim-signed/mok/MOK.priv"
+            mok_cert="/var/lib/shim-signed/mok/MOK.der"
+        elif [ -f "/var/lib/dkms/mok.key" ] && [ -f "/var/lib/dkms/mok.pub" ]; then
+            mok_key="/var/lib/dkms/mok.key"
+            mok_cert="/var/lib/dkms/mok.pub"
+        fi
+
+        if [ -n "$sign_file" ] && [ -n "$mok_key" ]; then
+            "$sign_file" sha256 "$mok_key" "$mok_cert" btusb.ko
+            "$sign_file" sha256 "$mok_key" "$mok_cert" btmtk.ko
+            ok "Modules signed with enrolled MOK key (${mok_key})"
+        else
+            warn "Secure Boot is enabled but no enrolled MOK key was found."
+            warn "modprobe will likely fail with 'Key was rejected by service'."
+            warn "Either disable Secure Boot, or enroll a MOK key (installing any"
+            warn "DKMS driver will generate+enroll one) and re-run with --bt."
+        fi
+    fi
+
     if command -v zstd &>/dev/null; then
         zstd -f btusb.ko -o btusb.ko.zst 2>/dev/null
         zstd -f btmtk.ko -o btmtk.ko.zst 2>/dev/null
@@ -452,21 +499,17 @@ install_bt() {
     rmmod btusb 2>/dev/null || true
     rmmod btmtk 2>/dev/null || true
     depmod -a
-    modprobe btmtk
-    modprobe btusb
+    if ! modprobe btmtk; then
+        fail "Failed to load btmtk (see Secure Boot warning above if shown)"
+        exit 1
+    fi
+    if ! modprobe btusb; then
+        fail "Failed to load btusb (see Secure Boot warning above if shown)"
+        exit 1
+    fi
     ok "Modules loaded"
 
     cd "$SCRIPT_DIR"
-
-    step "Installing Bluetooth firmware"
-    local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
-    if [ -d "$fw" ]; then
-        mkdir -p "${FW_DIR}/mediatek"
-        for f in "$fw"/BT_*.bin.zst "$fw"/BT_*.bin; do
-            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
-        done
-    fi
-    ok "BT firmware copied"
 }
 
 # ── main ──────────────────────────────────────────────────────
