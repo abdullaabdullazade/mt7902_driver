@@ -191,6 +191,14 @@ install_firmware() {
     fi
 
     mkdir -p "$dstdir"
+
+    # linux-firmware has shipped MT7902 firmware since its 20260309 release.
+    # If the distribution already provides a non-empty copy, that one is
+    # authoritative — do not overwrite it with the bundle in this repo.
+    if [ -s "${dstdir}/${base}" ]; then
+        return 0
+    fi
+
     tmp="${dstdir}/.${base}.new"
     if ! cp "$src" "$tmp" 2>/dev/null; then
         rm -f "$tmp"
@@ -234,6 +242,30 @@ verify_firmware() {
 # number, so distro kernels that backport the support are detected too.
 intree_supports_mt7902() {
     modinfo mt7921e 2>/dev/null | grep -qi 'd00007902'
+}
+
+# hmtheboy154/mt7902 is mainline mt76 plus MediaTek's MT7902 series, backported
+# to older kernels. Its README states the supported range as 6.6~6.19. Outside
+# that range the build either fails or produces a module that cannot bind, so
+# check before spending several minutes on it.
+backport_supports_kernel() {
+    [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ] && [ "$KMINOR" -le 19 ]
+}
+
+# 7.0 is the one release with neither in-tree support (landed in 7.1) nor
+# backport coverage (6.6~6.19). Say so instead of letting people burn an
+# afternoon on drivers that cannot work.
+warn_unsupported_kernel() {
+    echo ""
+    echo -e "  ${YELLOW}━━━ KERNEL ${KMAJOR}.${KMINOR} IS A HARD CASE ━━━${NC}"
+    echo -e "  In-tree MT7902 support starts at ${BOLD}kernel 7.1${NC}."
+    echo -e "  The mt76 backport covers ${BOLD}6.6 - 6.19${NC}."
+    echo -e "  Your kernel is in neither range, so only the old vendor driver is"
+    echo -e "  left, and it frequently fails MCU init on this card."
+    echo ""
+    echo -e "  ${WHITE}Best fix:${NC} move to kernel 7.1 or newer and use the stock driver."
+    echo -e "  ${WHITE}Also works:${NC} a 6.x kernel (<= 6.19) with this installer."
+    echo ""
 }
 
 use_intree_driver() {
@@ -466,11 +498,16 @@ install_wifi() {
     # the same lineage upstream ended up merging — so it is the better first
     # choice. gen4 is still attempted if it fails. Use --gen4 to invert this.
     if [ "$PREFER_GEN4" = false ]; then
-        step "Trying the mt76-based driver first (gen4 is the fallback)"
-        if install_wifi_fallback; then
-            return 0
+        if backport_supports_kernel; then
+            step "Trying the mt76-based driver first (gen4 is the fallback)"
+            if install_wifi_fallback; then
+                return 0
+            fi
+            warn "mt76-based driver did not work; trying gen4-mt7902"
+        else
+            warn_unsupported_kernel
+            warn "Skipping the mt76 backport (kernel out of its 6.6-6.19 range)"
         fi
-        warn "mt76-based driver did not work; trying gen4-mt7902"
     fi
 
     [ -d "$src" ] || { fail "WiFi source not found: $src"; return 1; }

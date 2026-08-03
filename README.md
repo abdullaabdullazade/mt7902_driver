@@ -22,6 +22,19 @@ shows up as `UNCLAIMED`. This repo bundles community-maintained out-of-tree
 drivers and forward-ports applicable upstream fixes so those kernels get both
 WiFi and Bluetooth working today.
 
+### What works on which kernel
+
+| Kernel | What to use | Notes |
+|--------|-------------|-------|
+| **7.1 and newer** | in-tree `mt7921e` | Nothing to install. `install.sh` detects this and exits early. |
+| **6.6 – 6.19** | [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) | Mainline mt76 + MediaTek's MT7902 series, backported. `install.sh` uses it by default. |
+| **7.0** | *no good option* | In-tree support starts at 7.1; the backport covers up to 6.19. Move to 7.1+ (or back to a 6.x kernel). `install.sh` warns instead of pretending. |
+| **older than 6.6** | bundled `gen4-mt7902` | Vendor tree; frequently fails MCU init. Last resort. |
+
+Firmware ships in `linux-firmware` as of its 20260309 release. If your system
+already has it, `install.sh` leaves those files alone rather than overwriting
+them with the copies bundled here.
+
 | | Status | Notes |
 |-|--------|-------|
 | WiFi (2.4 GHz) | Working | Stable on most hardware |
