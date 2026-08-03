@@ -223,15 +223,21 @@ announce_kernel_situation() {
     echo -e "  ${BOLD}Kernel 7.1 and newer support this card out of the box${NC} — no"
     echo -e "  out-of-tree driver, no DKMS, nothing to rebuild on every update."
     echo ""
-    echo -e "  ${WHITE}The real fix is to upgrade the kernel:${NC}"
+    echo -e "  ${WHITE}Getting to 7.1 depends on your distribution:${NC}"
     case "$DISTRO" in
-        debian) echo -e "    ${CYAN}sudo apt update && sudo apt full-upgrade${NC}"
-                echo -e "    ${DIM}or, for a mainline build: sudo ./install.sh --upgrade-kernel${NC}" ;;
-        fedora) echo -e "    ${CYAN}sudo dnf upgrade --refresh${NC}" ;;
-        arch)   echo -e "    ${CYAN}sudo pacman -Syu${NC}" ;;
-        suse)   echo -e "    ${CYAN}sudo zypper dup${NC}" ;;
+        debian) echo -e "    ${DIM}Ubuntu/Debian stable do not move to a new kernel series within${NC}"
+                echo -e "    ${DIM}a release. Either move to a newer release, or install a${NC}"
+                echo -e "    ${DIM}mainline build: ${NC}${CYAN}sudo ./install.sh --upgrade-kernel${NC}" ;;
+        fedora) echo -e "    ${DIM}Fedora does ship new kernel series to existing releases, so${NC}"
+                echo -e "    ${DIM}${NC}${CYAN}sudo dnf upgrade --refresh${NC}${DIM} will get you there once 7.1 lands.${NC}"
+                echo -e "    ${DIM}Until then a full upgrade is gigabytes and changes nothing here.${NC}" ;;
+        arch)   echo -e "    ${CYAN}sudo pacman -Syu${NC}${DIM} — rolling, so this should already have it${NC}" ;;
+        suse)   echo -e "    ${CYAN}sudo zypper dup${NC}${DIM} — on Tumbleweed this should already have it${NC}" ;;
         *)      echo -e "    ${CYAN}Update through your distribution's usual channel${NC}" ;;
     esac
+    echo ""
+    echo -e "  ${DIM}This is not urgent: the driver installed below works on 6.6 - 7.0.${NC}"
+    echo -e "  ${DIM}Upgrading just means nothing to rebuild on future kernel updates.${NC}"
     # Offer it as a choice when there is someone there to answer. Default is No:
     # a driver installer should not upgrade a kernel unless asked to.
     # /dev/tty can exist as a device node yet not be openable (containers, cron,
@@ -264,6 +270,20 @@ announce_kernel_situation() {
 # Distributions other than Debian/Ubuntu get their own supported upgrade path
 # rather than an unsigned mainline build. Whether it actually reaches 7.1
 # depends on what the distribution is shipping today, so say so.
+# What kernel version can this distribution actually give us right now? A full
+# system upgrade is gigabytes; it is not worth downloading to end up on the same
+# kernel series. Only asked when the user has already said they want to upgrade.
+available_kernel_version() {
+    case "$DISTRO" in
+        fedora) dnf -q --refresh list --available kernel 2>/dev/null |
+                    awk '/^kernel/ {print $2}' | sort -V | tail -1 ;;
+        arch)   pacman -Sy >/dev/null 2>&1
+                pacman -Si linux 2>/dev/null | awk -F': ' '/^Version/ {print $2}' | head -1 ;;
+        suse)   zypper --non-interactive info kernel-default 2>/dev/null |
+                    awk -F': ' '/^Version/ {print $2}' | head -1 ;;
+    esac
+}
+
 run_distro_upgrade() {
     local cmd=""
     case "$DISTRO" in
@@ -275,10 +295,32 @@ run_distro_upgrade() {
                 return 1 ;;
     esac
 
+    step "Checking what kernel your distribution offers"
+    local avail maj min
+    avail=$(available_kernel_version)
+    if [ -n "$avail" ]; then
+        maj=${avail%%.*}
+        min=${avail#*.}; min=${min%%.*}
+        min=${min//[!0-9]/}
+        if [ -n "$maj" ] && [ -n "$min" ] &&
+           { [ "$maj" -lt 7 ] || { [ "$maj" -eq 7 ] && [ "$min" -lt 1 ]; }; }; then
+            warn "Newest kernel available to you is ${avail} — still below 7.1"
+            echo ""
+            echo -e "  ${DIM}A full system upgrade would download gigabytes and leave you${NC}"
+            echo -e "  ${DIM}on the same kernel series, so it will not help with this card${NC}"
+            echo -e "  ${DIM}yet. The driver installed by this script is the right answer${NC}"
+            echo -e "  ${DIM}until your distribution ships 7.1.${NC}"
+            echo ""
+            return 1
+        fi
+        ok "Kernel ${avail} is available"
+    else
+        warn "Could not determine which kernel your distribution offers"
+    fi
+
     echo ""
     echo -e "  ${YELLOW}This runs a full system upgrade:${NC}  ${CYAN}${cmd}${NC}"
-    echo -e "  ${DIM}It may not reach kernel 7.1 yet — that depends on what your${NC}"
-    echo -e "  ${DIM}distribution currently ships. Nothing is rebooted for you.${NC}"
+    echo -e "  ${DIM}Nothing is rebooted for you.${NC}"
     echo ""
     printf "  Type %byes%b to run it: " "${BOLD}" "${NC}"
     local answer=""
