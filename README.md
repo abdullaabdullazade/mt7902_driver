@@ -2,7 +2,37 @@
 
 Out-of-tree WiFi and Bluetooth drivers for the **MediaTek MT7902** M.2 PCIe wireless card on Linux.
 
-The MT7902 is not yet fully supported by the mainline `mt76` kernel driver, although MediaTek has started submitting official patches upstream (see [PATCH 01–11/11 series](https://lore.kernel.org/linux-wireless/?q=mt7902), Feb 2026). This repo bundles community-maintained out-of-tree drivers and forward-ports applicable upstream fixes so you can get both WiFi and Bluetooth working today.
+> **On kernel 7.1 or newer you probably do not need this repo.**
+> MT7902 (`14c3:7902`) support is merged into the in-tree `mt7921e` driver as of
+> **Linux 7.1**, and the firmware ships in `linux-firmware`. Upstream handles the
+> chip's quirks directly: it skips the MCU-WA ring, uses TXQ index 15 for MCU-WM
+> with a larger shared RX Ring0, clears `wm2_complete_mask` in its own IRQ map,
+> and leaves runtime PM disabled for this chip. Check your kernel with:
+>
+> ```sh
+> modinfo mt7921e | grep 7902     # a match means your kernel already supports it
+> ```
+>
+> `install.sh` performs this check and will use the in-tree driver instead of
+> building anything. Pass `--force-custom` to override.
+
+Older kernels (6.19 and earlier, including Ubuntu 24.04's 6.8) do **not** claim
+the device — `mt7921e` there lists only `7920/0616/0608/7922/7961`, so the card
+shows up as `UNCLAIMED`. This repo bundles community-maintained out-of-tree
+drivers and forward-ports applicable upstream fixes so those kernels get both
+WiFi and Bluetooth working today.
+
+### What works on which kernel
+
+| Kernel | What to use | Notes |
+|--------|-------------|-------|
+| **7.1 and newer** | in-tree `mt7921e` | Nothing to install. `install.sh` detects this and exits early. |
+| **6.6 – 7.0** | [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) | Mainline mt76 + MediaTek's MT7902 series, backported. `install.sh` uses it by default. Its README says 6.6~6.19, but the tree builds clean against 7.0 too — verified here against the `7.0.0-070000-generic` headers — which matters because 7.0 has no in-tree support either. |
+| **older than 6.6** | bundled `gen4-mt7902` | Vendor tree; frequently fails MCU init. Last resort. |
+
+Firmware ships in `linux-firmware` as of its 20260309 release. If your system
+already has it, `install.sh` leaves those files alone rather than overwriting
+them with the copies bundled here.
 
 | | Status | Notes |
 |-|--------|-------|
@@ -34,18 +64,28 @@ sudo ./install.sh --no-dkms  # skip DKMS, compile manually
 
 ### Automatic driver selection
 
-The installer automatically detects whether the gen4-mt7902 driver works on your hardware. After loading the module it checks:
+The installer picks the driver that suits your kernel, in this order:
 
-1. **Module loaded** — `mt7902` appears in `lsmod`
-2. **No kernel errors** — `dmesg` is clean (no panics, MCU failures, BAR0 errors)
-3. **WiFi interface appeared** — a `wlan*` / `wlp*` / `wlo*` device shows up
+1. **In-tree `mt7921e`**, if `modinfo mt7921e` shows the `14c3:7902` alias
+   (kernel 7.1+). Nothing is built, nothing is blacklisted.
+2. **[hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902)** — mainline
+   mt76 with MediaTek's MT7902 patches — on kernel 6.6 and newer.
+3. **Bundled `gen4-mt7902`**, only if the above did not work. After loading it
+   the installer checks that `mt7902` is in `lsmod`, that `dmesg` is clean, and
+   that a `wlan*` / `wlp*` / `wlo*` interface appeared; if not, it removes the
+   driver again rather than leaving a half-installed system behind.
 
-If any check fails, the installer **automatically falls back** to the alternative driver by **[hmtheboy154](https://github.com/hmtheboy154)**: [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) (supports kernel 6.6–6.19).
+gen4-mt7902 is tried last on purpose: it is a vendor tree that frequently fails
+MCU init on this card (`wlanAccessRegister: Event reports address incorrect`,
+`Fail reason: 4`), which is what its `mcu_bypass` and `disable_rpm` options
+exist to work around.
 
-You can also force the fallback driver directly:
+To override the order:
 
 ```sh
-sudo ./install.sh --fallback  # skip gen4, use hmtheboy154/mt7902
+sudo ./install.sh --fallback      # go straight to hmtheboy154/mt7902
+sudo ./install.sh --gen4          # try the bundled vendor driver first
+sudo ./install.sh --force-custom  # build even if the kernel has in-tree support
 ```
 
 Or install it manually:

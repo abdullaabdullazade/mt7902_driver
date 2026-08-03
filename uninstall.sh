@@ -101,6 +101,7 @@ fi
 step "Removing driver blacklist configs"
 rm -f /etc/modprobe.d/blacklist-mt7921.conf 2>/dev/null || true
 rm -f /etc/modprobe.d/blacklist-mt7902.conf 2>/dev/null || true
+rm -f /etc/modprobe.d/mt7902-noautoload.conf 2>/dev/null || true
 ok "Blacklist configs removed"
 
 # remove late-load systemd service
