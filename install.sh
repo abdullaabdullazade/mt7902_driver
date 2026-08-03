@@ -232,11 +232,70 @@ announce_kernel_situation() {
         suse)   echo -e "    ${CYAN}sudo zypper dup${NC}" ;;
         *)      echo -e "    ${CYAN}Update through your distribution's usual channel${NC}" ;;
     esac
+    # Offer it as a choice when there is someone there to answer. Default is No:
+    # a driver installer should not upgrade a kernel unless asked to.
+    # /dev/tty can exist as a device node yet not be openable (containers, cron,
+    # piped runs), so test by actually opening it.
+    if ( exec 3< /dev/tty ) 2>/dev/null; then
+        local reply=""
+        printf "  Upgrade the kernel now instead of installing a driver? [y/%bN%b] " "${BOLD}" "${NC}"
+        read -r reply < /dev/tty || reply=""
+        case "$reply" in
+            y|Y|yes|YES)
+                if [ "$DISTRO" = "debian" ]; then
+                    upgrade_kernel && exit 0
+                else
+                    run_distro_upgrade && exit 0
+                fi
+                warn "Kernel upgrade did not complete — continuing with the driver install"
+                ;;
+        esac
+        echo ""
+        return 0
+    fi
+
     echo ""
     echo -e "  ${DIM}Carrying on for now and installing the best driver available${NC}"
     echo -e "  ${DIM}for ${KMAJOR}.${KMINOR}. Press Ctrl+C within 5s to stop and upgrade instead.${NC}"
     echo ""
     sleep 5
+}
+
+# Distributions other than Debian/Ubuntu get their own supported upgrade path
+# rather than an unsigned mainline build. Whether it actually reaches 7.1
+# depends on what the distribution is shipping today, so say so.
+run_distro_upgrade() {
+    local cmd=""
+    case "$DISTRO" in
+        fedora) cmd="dnf upgrade --refresh -y" ;;
+        arch)   cmd="pacman -Syu --noconfirm" ;;
+        suse)   cmd="zypper --non-interactive dup" ;;
+        *)      warn "No automatic upgrade path known for this distribution"
+                suggest_kernel_upgrade
+                return 1 ;;
+    esac
+
+    echo ""
+    echo -e "  ${YELLOW}This runs a full system upgrade:${NC}  ${CYAN}${cmd}${NC}"
+    echo -e "  ${DIM}It may not reach kernel 7.1 yet — that depends on what your${NC}"
+    echo -e "  ${DIM}distribution currently ships. Nothing is rebooted for you.${NC}"
+    echo ""
+    printf "  Type %byes%b to run it: " "${BOLD}" "${NC}"
+    local answer=""
+    read -r answer < /dev/tty || true
+    [ "$answer" = "yes" ] || { warn "Cancelled"; return 1; }
+
+    step "Running system upgrade"
+    if ! $cmd; then
+        fail "System upgrade failed"
+        return 1
+    fi
+    ok "System upgrade finished"
+    echo ""
+    echo -e "  ${WHITE}Reboot, then run this script again.${NC}"
+    echo -e "  ${DIM}If the new kernel is 7.1+ it will install nothing at all.${NC}"
+    echo ""
+    return 0
 }
 
 upgrade_kernel() {
