@@ -6555,7 +6555,7 @@ int mtk_cfg_start_radar_detection(struct wiphy *wiphy,
 				  struct net_device *dev,
 				  struct cfg80211_chan_def *chandef,
 				  unsigned int cac_time_ms
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
                   ,int link_id
 #endif
 )

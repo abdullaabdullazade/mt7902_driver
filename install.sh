@@ -62,6 +62,37 @@ ok()   { echo -e "      ${GREEN}✓${NC} $1"; }
 warn() { echo -e "      ${YELLOW}!${NC} $1"; }
 fail() { echo -e "      ${RED}✗${NC} $1"; }
 
+# ── crash safety ──────────────────────────────────────────────
+# Set to true once anything persistent (DKMS module, blacklist,
+# initramfs) has been written. If the script then dies, is Ctrl-C'd,
+# or the kernel hangs during modprobe, the user must be told how to
+# get back to a bootable system.
+GEN4_STAGED=false
+
+print_recovery_notice() {
+    echo ""
+    echo -e "  ${YELLOW}━━━ RECOVERY ━━━${NC}"
+    echo -e "  If this machine does not boot after a reboot, at the GRUB menu"
+    echo -e "  press ${BOLD}e${NC} on the Ubuntu/Linux entry, append this to the ${BOLD}linux${NC} line,"
+    echo -e "  then press ${BOLD}Ctrl+X${NC}:"
+    echo ""
+    echo -e "      ${CYAN}modprobe.blacklist=mt7902,mt7902e${NC}"
+    echo ""
+    echo -e "  Once booted, run: ${CYAN}sudo ${SCRIPT_DIR}/uninstall.sh${NC}"
+    echo ""
+}
+
+on_error() {
+    local rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    echo ""
+    fail "Installer aborted (exit ${rc})."
+    if [ "$GEN4_STAGED" = true ]; then
+        print_recovery_notice
+    fi
+}
+trap on_error EXIT
+
 # ── usage ─────────────────────────────────────────────────────
 usage() {
     show_banner
@@ -124,13 +155,58 @@ detect_distro() {
 install_deps() {
     step "Installing build dependencies"
     case "$DISTRO" in
-        debian) apt-get update -qq && apt-get install -y build-essential linux-headers-$(uname -r) dkms zstd > /dev/null 2>&1 ;;
-        fedora) dnf install -y make gcc kernel-devel kernel-headers dkms zstd > /dev/null 2>&1 ;;
-        arch)   pacman -S --needed --noconfirm base-devel linux-headers dkms zstd > /dev/null 2>&1 ;;
-        suse)   zypper install -y make gcc kernel-devel dkms zstd > /dev/null 2>&1 ;;
-        *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd"; return ;;
+        debian) apt-get update -qq && apt-get install -y build-essential linux-headers-$(uname -r) dkms zstd git > /dev/null 2>&1 ;;
+        fedora) dnf install -y make gcc kernel-devel kernel-headers dkms zstd git > /dev/null 2>&1 ;;
+        arch)   pacman -S --needed --noconfirm base-devel linux-headers dkms zstd git > /dev/null 2>&1 ;;
+        suse)   zypper install -y make gcc kernel-devel dkms zstd git > /dev/null 2>&1 ;;
+        *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return ;;
     esac
     ok "Dependencies ready (${DISTRO})"
+}
+
+# ── initramfs ─────────────────────────────────────────────────
+rebuild_initramfs() {
+    if command -v update-initramfs &>/dev/null; then
+        update-initramfs -u 2>/dev/null && ok "initramfs updated (Debian/Ubuntu)"
+    elif command -v mkinitcpio &>/dev/null; then
+        mkinitcpio -P 2>/dev/null && ok "initramfs updated (Arch)"
+    elif command -v dracut &>/dev/null; then
+        dracut --force 2>/dev/null && ok "initramfs updated (Fedora/RHEL)"
+    fi
+    return 0
+}
+
+# ── blacklist stock drivers ───────────────────────────────────
+# Only called AFTER the custom driver has proven it works. Doing this
+# earlier leaves a machine with no working WiFi driver at all when the
+# custom one fails.
+blacklist_stock_drivers() {
+    step "Blacklisting conflicting stock drivers"
+    mkdir -p /etc/modprobe.d
+    cat > /etc/modprobe.d/blacklist-mt7921.conf <<'EOF'
+# Blacklist stock MediaTek WiFi drivers — using custom mt7902.ko instead
+blacklist mt7921e
+blacklist mt7902e
+blacklist mt7921_common
+blacklist mt76_connac_lib
+blacklist mt7921s
+blacklist mt7921u
+EOF
+    ok "Stock drivers blacklisted (/etc/modprobe.d/blacklist-mt7921.conf)"
+    rebuild_initramfs
+}
+
+# ── guarded module load ───────────────────────────────────────
+# A bad mt7902 build can wedge the kernel thread in probe and never
+# return. Bounded so the installer keeps control and can fall back.
+try_modprobe() {
+    timeout 60 modprobe "$@" 2>/dev/null
+    local rc=$?
+    if [ "$rc" -eq 124 ]; then
+        warn "modprobe $* timed out after 60s (driver hung in probe)"
+        return 1
+    fi
+    return $rc
 }
 
 # ── wifi health check ─────────────────────────────────────────
@@ -191,6 +267,7 @@ cleanup_gen4() {
 
     # 5. Remove modprobe config (mcu_bypass etc.)
     rm -f /etc/modprobe.d/mt7902.conf
+    rm -f /etc/modprobe.d/mt7902-noautoload.conf
 
     # 6. Remove blacklist (so hmtheboy154's mt7902e is not blocked)
     rm -f /etc/modprobe.d/blacklist-mt7921.conf
@@ -226,11 +303,13 @@ install_wifi_fallback() {
     cleanup_gen4
 
     step "Cloning hmtheboy154/mt7902"
+    # git refuses to run if the current directory has been removed underneath us
+    cd "$SCRIPT_DIR" 2>/dev/null || cd /tmp
     rm -rf "$FALLBACK_DIR"
     if ! git clone --depth 1 "$FALLBACK_REPO" "$FALLBACK_DIR" 2>&1; then
         fail "Could not clone ${FALLBACK_REPO}"
         fail "Check your internet connection and try again."
-        exit 1
+        return 1
     fi
     ok "Repository cloned to ${FALLBACK_DIR}"
 
@@ -252,7 +331,11 @@ install_wifi_fallback() {
     rmmod mt7921e 2>/dev/null || true
     rmmod mt7921_common 2>/dev/null || true
     rmmod mt76_connac_lib 2>/dev/null || true
-    modprobe mt7902e || { fail "Could not load alternative driver either."; exit 1; }
+    if ! try_modprobe mt7902e; then
+        fail "Could not load alternative driver either."
+        WIFI_DRIVER_USED="none (both drivers failed)"
+        return 1
+    fi
     ok "Alternative driver loaded (mt7902e by hmtheboy154)"
 
     WIFI_DRIVER_USED="hmtheboy154/mt7902"
@@ -269,7 +352,7 @@ install_wifi() {
     # ── if --fallback flag used, skip gen4 entirely ────────────
     if [ "$USE_FALLBACK" = true ]; then
         step "Skipping gen4 driver (--fallback flag set)"
-        install_wifi_fallback
+        install_wifi_fallback || return 1
         return 0
     fi
 
@@ -310,26 +393,24 @@ install_wifi() {
     fi
     ok "Firmware copied to ${FW_DIR}/mediatek/"
 
-    step "Blacklisting conflicting stock drivers"
-    cat > /etc/modprobe.d/blacklist-mt7921.conf <<'EOF'
-# Blacklist stock MediaTek WiFi drivers — using custom mt7902.ko instead
-blacklist mt7921e
-blacklist mt7902e
-blacklist mt7921_common
-blacklist mt76_connac_lib
-blacklist mt7921s
-blacklist mt7921u
+    # Prevent udev from auto-loading mt7902 at boot. The module is loaded
+    # explicitly by mt7902-late.service *after* userspace is up, so a driver
+    # that hangs in probe can never hang the boot itself. Written before the
+    # first modprobe on purpose: if the machine freezes during that modprobe,
+    # the next boot is still clean.
+    step "Disabling boot-time auto-load of mt7902 (boot safety)"
+    mkdir -p /etc/modprobe.d
+    cat > /etc/modprobe.d/mt7902-noautoload.conf <<'EOF'
+# mt7902 is loaded late by mt7902-late.service, never automatically at boot.
+# This keeps a hanging driver from freezing the boot. Do not remove unless
+# you also remove the module.
+blacklist mt7902
 EOF
-    ok "Stock drivers blacklisted (/etc/modprobe.d/blacklist-mt7921.conf)"
+    GEN4_STAGED=true
+    rebuild_initramfs
+    ok "Auto-load disabled (/etc/modprobe.d/mt7902-noautoload.conf)"
 
-    # regenerate initramfs so blacklist takes effect on next boot
-    if command -v update-initramfs &>/dev/null; then
-        update-initramfs -u 2>/dev/null && ok "initramfs updated (Debian/Ubuntu)"
-    elif command -v mkinitcpio &>/dev/null; then
-        mkinitcpio -P 2>/dev/null && ok "initramfs updated (Arch)"
-    elif command -v dracut &>/dev/null; then
-        dracut --force 2>/dev/null && ok "initramfs updated (Fedora/RHEL)"
-    fi
+    print_recovery_notice
 
     step "Loading WiFi module"
     depmod -a
@@ -342,7 +423,7 @@ EOF
 
     # ── try loading gen4 driver + health check ────────────────
     local gen4_ok=false
-    if modprobe mt7902 2>/dev/null; then
+    if try_modprobe mt7902; then
         step "Verifying gen4 driver health"
         if check_wifi_health; then
             ok "gen4-mt7902 loaded and WiFi interface is up"
@@ -359,7 +440,7 @@ EOF
     if [ "$gen4_ok" = false ]; then
         warn "Attempting MCU Bypass (Force Load)..."
         rmmod mt7902 2>/dev/null || true
-        if modprobe mt7902 mcu_bypass=1 2>/dev/null; then
+        if try_modprobe mt7902 mcu_bypass=1; then
             sleep 2
             if check_wifi_health; then
                 warn "Module loaded with MCU Bypass — works but may be unstable."
@@ -380,9 +461,13 @@ EOF
         echo ""
         warn "gen4-mt7902 driver is not working on this system."
         echo -e "      ${YELLOW}Automatically falling back to hmtheboy154/mt7902...${NC}"
-        install_wifi_fallback
+        install_wifi_fallback || return 1
         return 0
     fi
+
+    # driver is proven working — only now is it safe to take the stock
+    # drivers out of the picture
+    blacklist_stock_drivers
 
     # install late-load systemd service (fixes boot race condition)
     if [ -f "${SCRIPT_DIR}/mt7902-late.service" ] && command -v systemctl &>/dev/null; then
@@ -421,15 +506,39 @@ install_bt() {
                 best="$d"
             fi
         done
-        [ -z "$best" ] && best=$(ls -d "${base}"/linux-*/drivers/bluetooth 2>/dev/null | sort -V | head -1)
+        if [ -z "$best" ]; then
+            # every bundled source is newer than the running kernel — build the
+            # oldest one and rely on the compat shims below
+            best=$(ls -d "${base}"/linux-*/drivers/bluetooth 2>/dev/null | sort -V | head -1)
+            [ -n "$best" ] && warn "Kernel ${KMAJOR}.${KMINOR} is older than every bundled source; using oldest with compat shims"
+        fi
         [ -z "$best" ] && { fail "No bluetooth source found"; return 1; }
         bt_dir="$best"
         ok "Using $(basename $(dirname $(dirname $bt_dir)))"
     fi
 
+    # ── compat shims for kernels older than the bundled source ────
+    # <linux/unaligned.h> is the 6.12+ name; before that the same helpers
+    # live in <asm/unaligned.h>. Provide a shim header on the include path
+    # so the newer bluetooth source still compiles on older kernels.
+    local compat_inc=""
+    if [ "$KMAJOR" -lt 6 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -lt 12 ]; }; then
+        compat_inc="$(mktemp -d /tmp/mt7902-compat-XXXXXX)"
+        mkdir -p "${compat_inc}/linux"
+        cat > "${compat_inc}/linux/unaligned.h" <<'EOF'
+/* Compat shim: <linux/unaligned.h> only exists on 6.12+ */
+#ifndef _MT7902_COMPAT_LINUX_UNALIGNED_H
+#define _MT7902_COMPAT_LINUX_UNALIGNED_H
+#include <asm/unaligned.h>
+#endif
+EOF
+        ok "Compat shim enabled (linux/unaligned.h for kernel < 6.12)"
+    fi
+
     step "Building btusb + btmtk modules"
     cd "$bt_dir"
-    make -C /lib/modules/$(uname -r)/build/ M=$(pwd) modules
+    make -C /lib/modules/$(uname -r)/build/ M=$(pwd) \
+        ${compat_inc:+EXTRA_CFLAGS="-I${compat_inc}"} modules
 
     if command -v zstd &>/dev/null; then
         zstd -f btusb.ko -o btusb.ko.zst 2>/dev/null
@@ -476,10 +585,12 @@ show_info_box
 
 install_deps
 
+WIFI_FAILED=false
 if [ "$DO_WIFI" = true ]; then
     echo ""
     echo -e "  ${WHITE}── WiFi ──────────────────────────────────${NC}"
-    install_wifi
+    # A WiFi failure must not skip the Bluetooth install the user also asked for
+    install_wifi || WIFI_FAILED=true
 fi
 
 if [ "$DO_BT" = true ]; then
@@ -491,7 +602,13 @@ fi
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
 echo ""
-echo -e "  ${GREEN}${BOLD}Installation complete.${NC}"
+if [ "$WIFI_FAILED" = true ]; then
+    echo -e "  ${YELLOW}${BOLD}Installation finished with errors.${NC}"
+    echo -e "  ${YELLOW}WiFi could not be installed — no driver loaded.${NC}"
+    echo -e "  ${DIM}Stock drivers were left untouched, so your system is unchanged.${NC}"
+else
+    echo -e "  ${GREEN}${BOLD}Installation complete.${NC}"
+fi
 echo ""
 if [ "$DO_WIFI" = true ] && [ "$DO_BT" = true ]; then
     echo -e "  ${DIM}Installed: WiFi + Bluetooth${NC}"
@@ -520,8 +637,13 @@ fi
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
 echo ""
-echo -e "  ${YELLOW}Rebooting in 5 seconds... (Ctrl+C to cancel)${NC}"
-for i in 5 4 3 2 1; do
+if [ "$WIFI_FAILED" = true ]; then
+    echo -e "  ${DIM}Not rebooting automatically — read the errors above first.${NC}"
+    exit 1
+fi
+
+echo -e "  ${YELLOW}Rebooting in 10 seconds... (Ctrl+C to cancel)${NC}"
+for i in 10 9 8 7 6 5 4 3 2 1; do
     echo -ne "\r  ${BOLD}${i}...${NC}  "
     sleep 1
 done
