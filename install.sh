@@ -114,9 +114,10 @@ usage() {
     --gen4        Try the bundled gen4-mt7902 vendor driver before the
                   mt76-based one (default order is the other way round)
     --upgrade-kernel
-                  Offer to install a mainline 7.1 kernel, which supports this
-                  card in-tree. Asks for confirmation; never reboots for you.
-                  Debian/Ubuntu only, and refused under Secure Boot.
+                  Offer to move to a kernel that supports this card in-tree
+                  (7.1+). Fedora installs its own signed kernel alongside the
+                  current one; Debian/Ubuntu get a mainline build, which is
+                  refused under Secure Boot. Asks first, never reboots.
     --no-card-check
                   Install even when no MT7902 is present on the PCI bus
     -h, --help    Show this message
@@ -323,21 +324,36 @@ run_distro_upgrade() {
             esac
         else
             ok "Kernel ${avail} is available — this will give you in-tree support"
+            # Fedora installs kernels side by side, so pulling in just the one
+            # is a few hundred megabytes instead of a full system upgrade, and
+            # leaves the running kernel in place to fall back to. Note that
+            # `dnf install kernel` is a no-op when any kernel is installed —
+            # the version has to be explicit.
+            if [ "$DISTRO" = "fedora" ]; then
+                cmd="dnf install -y kernel-${avail} kernel-core-${avail} kernel-modules-${avail} kernel-modules-core-${avail}"
+            fi
+            # Arch and openSUSE Tumbleweed do not support partial upgrades, so
+            # they keep the full-system command.
         fi
     else
         warn "Could not determine which kernel your distribution offers"
     fi
 
     echo ""
-    echo -e "  ${YELLOW}This runs a full system upgrade:${NC}  ${CYAN}${cmd}${NC}"
-    echo -e "  ${DIM}Nothing is rebooted for you.${NC}"
+    if [ "$DISTRO" = "fedora" ] && [ "${cmd#dnf install}" != "$cmd" ]; then
+        echo -e "  ${YELLOW}This installs the new kernel alongside your current one:${NC}"
+    else
+        echo -e "  ${YELLOW}This runs a full system upgrade:${NC}"
+    fi
+    echo -e "  ${CYAN}${cmd}${NC}"
+    echo -e "  ${DIM}Nothing is rebooted for you; the running kernel stays in GRUB.${NC}"
     echo ""
     printf "  Type %byes%b to run it: " "${BOLD}" "${NC}"
     local answer=""
     read -r answer < /dev/tty || true
     [ "$answer" = "yes" ] || { warn "Cancelled"; return 1; }
 
-    step "Running system upgrade — this downloads a lot and takes a while"
+    step "Installing the kernel — this downloads a lot and takes a while"
     echo -e "  ${DIM}Leave it alone until it finishes; output below is the package manager's.${NC}"
     echo ""
     if ! $cmd; then
@@ -360,10 +376,11 @@ upgrade_kernel() {
         return 0
     fi
 
+    # Everything except Debian/Ubuntu has a supported kernel in its own
+    # repositories, which beats an unsigned mainline build every time.
     if [ "$DISTRO" != "debian" ]; then
-        warn "Automatic upgrade is only wired up for Debian/Ubuntu here."
-        suggest_kernel_upgrade
-        return 1
+        run_distro_upgrade
+        return $?
     fi
 
     if secure_boot_enabled; then
