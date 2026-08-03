@@ -19,6 +19,7 @@ DO_BT=false
 USE_DKMS=true
 USE_FALLBACK=false
 FORCE_CUSTOM=false
+PREFER_GEN4=false
 FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
 FALLBACK_DIR="/tmp/mt7902-fallback"
 WIFI_DRIVER_USED=""
@@ -106,8 +107,10 @@ usage() {
     --bt          Install Bluetooth driver only
     --no-dkms     Build WiFi driver manually instead of using DKMS
     --fallback    Skip gen4 driver, use hmtheboy154/mt7902 directly
-    --force-custom Build the custom driver even if the kernel already
+    --force-custom Build a custom driver even if the kernel already
                   supports 14c3:7902 in the in-tree mt7921e driver
+    --gen4        Try the bundled gen4-mt7902 vendor driver before the
+                  mt76-based one (default order is the other way round)
     -h, --help    Show this message
 
   Examples:
@@ -132,6 +135,7 @@ for arg in "$@"; do
         --no-dkms)  USE_DKMS=false ;;
         --fallback) USE_FALLBACK=true ;;
         --force-custom) FORCE_CUSTOM=true ;;
+        --gen4)     PREFER_GEN4=true ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $arg"; usage ;;
     esac
@@ -166,6 +170,58 @@ install_deps() {
         *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return ;;
     esac
     ok "Dependencies ready (${DISTRO})"
+}
+
+# ── firmware installation ─────────────────────────────────────
+# A truncated firmware file is worse than a missing one: request_firmware()
+# finds it, hands the driver zero bytes and fails with -EINVAL (-22), and
+# EVERY driver for this card then dies with "hardware init failed" — the
+# custom ones and the in-tree mt7921e alike. Copy to a temporary name, check
+# the size, and only then move it into place, so a failed copy can never
+# leave a stub behind that shadows a good file from linux-firmware.
+install_firmware() {
+    local src="$1" dstdir="$2"
+    local base tmp srcsz dstsz
+    base="$(basename "$src")"
+    srcsz=$(stat -c %s "$src" 2>/dev/null || echo 0)
+
+    if [ "$srcsz" -eq 0 ]; then
+        fail "Refusing to install empty firmware file: ${base}"
+        return 1
+    fi
+
+    mkdir -p "$dstdir"
+    tmp="${dstdir}/.${base}.new"
+    if ! cp "$src" "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        fail "Could not copy firmware ${base}"
+        return 1
+    fi
+
+    dstsz=$(stat -c %s "$tmp" 2>/dev/null || echo 0)
+    if [ "$dstsz" -ne "$srcsz" ]; then
+        rm -f "$tmp"
+        fail "Firmware ${base} copied short (${dstsz}/${srcsz} bytes) — not installing"
+        return 1
+    fi
+
+    mv -f "$tmp" "${dstdir}/${base}"
+}
+
+# Catch stubs left behind by earlier runs (or by anything else) before a
+# driver trips over them.
+verify_firmware() {
+    local dir="$1" empty
+    empty=$(find "$dir" -maxdepth 2 -name 'mt7902*' -o -maxdepth 2 -name 'WIFI_*MT7902*' 2>/dev/null | while read -r f; do
+        [ -f "$f" ] && [ ! -s "$f" ] && echo "$f"
+    done)
+    if [ -n "$empty" ]; then
+        fail "Zero-byte firmware files present — the card will fail with -EINVAL:"
+        echo "$empty" | while read -r f; do echo -e "        ${DIM}${f}${NC}"; done
+        fail "Remove them and reinstall linux-firmware, then re-run this script."
+        return 1
+    fi
+    return 0
 }
 
 # ── in-tree support probe ─────────────────────────────────────
@@ -334,8 +390,14 @@ install_wifi_fallback() {
     echo -e "  ${YELLOW}━━━ Switching to alternative driver (hmtheboy154/mt7902) ━━━${NC}"
     echo ""
 
-    # fully clean up the failed gen4 driver first
-    cleanup_gen4
+    # Only clean up gen4 if it is actually on the system. This path now also
+    # runs as the *first* choice, where there is nothing to remove and the
+    # cleanup output would be misleading.
+    if [ "$GEN4_STAGED" = true ] || dkms status gen4-mt7902 2>/dev/null | grep -q gen4-mt7902 ||
+       [ -e "/lib/modules/${KVER}/updates/dkms/mt7902.ko" ] ||
+       [ -e "/lib/modules/${KVER}/updates/dkms/mt7902.ko.zst" ]; then
+        cleanup_gen4
+    fi
 
     step "Cloning hmtheboy154/mt7902"
     # git refuses to run if the current directory has been removed underneath us
@@ -396,6 +458,21 @@ install_wifi() {
         return 0
     fi
 
+    # ── on kernels without in-tree support, try the mt76-based driver first ──
+    # gen4-mt7902 is a vendor tree that repeatedly fails MCU init on this
+    # hardware ("wlanAccessRegister: Event reports address incorrect",
+    # "Fail reason: 4"), which is what the mcu_bypass/disable_rpm options in
+    # this repo exist to work around. hmtheboy154/mt7902 is built on mt76 —
+    # the same lineage upstream ended up merging — so it is the better first
+    # choice. gen4 is still attempted if it fails. Use --gen4 to invert this.
+    if [ "$PREFER_GEN4" = false ]; then
+        step "Trying the mt76-based driver first (gen4 is the fallback)"
+        if install_wifi_fallback; then
+            return 0
+        fi
+        warn "mt76-based driver did not work; trying gen4-mt7902"
+    fi
+
     [ -d "$src" ] || { fail "WiFi source not found: $src"; return 1; }
 
     step "Building WiFi driver (gen4-mt7902)"
@@ -420,18 +497,32 @@ install_wifi() {
 
     step "Installing WiFi firmware"
     mkdir -p "${FW_DIR}/mediatek/mt7902"
-    [ -d "$src/firmware" ] && cp "$src/firmware/"* "${FW_DIR}/mediatek/" 2>/dev/null || true
+    local fw_failed=0
+    if [ -d "$src/firmware" ]; then
+        for f in "$src/firmware/"*; do
+            [ -f "$f" ] || continue
+            install_firmware "$f" "${FW_DIR}/mediatek/" || fw_failed=1
+        done
+    fi
 
     local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
     if [ -d "$fw" ]; then
         for f in "$fw"/WIFI_*.bin.zst "$fw"/WIFI_*.bin; do
-            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
+            [ -f "$f" ] || continue
+            install_firmware "$f" "${FW_DIR}/mediatek/" || fw_failed=1
         done
         for f in "$fw"/mt7902_*.bin.zst "$fw"/mt7902_*.bin; do
-            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/mt7902/"
+            [ -f "$f" ] || continue
+            install_firmware "$f" "${FW_DIR}/mediatek/mt7902/" || fw_failed=1
         done
     fi
-    ok "Firmware copied to ${FW_DIR}/mediatek/"
+    verify_firmware "${FW_DIR}/mediatek" || return 1
+    if [ "$fw_failed" -ne 0 ]; then
+        fail "Some firmware files could not be installed — the driver would fail"
+        fail "to initialise the card. Re-clone this repository and try again."
+        return 1
+    fi
+    ok "Firmware installed to ${FW_DIR}/mediatek/"
 
     # Prevent udev from auto-loading mt7902 at boot. The module is loaded
     # explicitly by mt7902-late.service *after* userspace is up, so a driver
