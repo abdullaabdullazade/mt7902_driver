@@ -1492,9 +1492,23 @@ bool glBusConfigASPM(struct pci_dev *dev, int i4Enable)
 {
 
 	uint32_t u4Reg = 0;
-	struct pci_dev *parent = dev->bus->self;
-	int pos = parent->pcie_cap;
+	struct pci_dev *parent;
+	int pos;
 
+	/* A device on the root bus has no parent bridge, and a parent without a
+	 * PCIe capability has nothing to configure. Either way there is no ASPM
+	 * to set up — dereferencing here panicked the kernel during probe.
+	 */
+	if (!dev || !dev->bus || !dev->bus->self) {
+		DBGLOG(INIT, INFO, "No parent bridge, skip ASPM config\n");
+		return FALSE;
+	}
+	parent = dev->bus->self;
+	pos = parent->pcie_cap;
+	if (!pos || !dev->pcie_cap) {
+		DBGLOG(INIT, INFO, "No PCIe capability, skip ASPM config\n");
+		return FALSE;
+	}
 
 	pci_read_config_dword(parent, pos + PCI_EXP_LNKCAP, &u4Reg);
 	if (PCIE_ASPM_CHECK_L1(u4Reg)) {
@@ -1512,7 +1526,13 @@ bool glBusConfigASPM(struct pci_dev *dev, int i4Enable)
 }
 bool glBusConfigASPML1SS(struct pci_dev *dev, int i4Enable)
 {
-	struct pci_dev *parent = dev->bus->self;
+	struct pci_dev *parent;
+
+	if (!dev || !dev->bus || !dev->bus->self) {
+		DBGLOG(INIT, INFO, "No parent bridge, skip ASPM-L1SS config\n");
+		return FALSE;
+	}
+	parent = dev->bus->self;
 
 	if (pcieCheckASPML1SS(parent, i4Enable)) {
 		if (pcieCheckASPML1SS(dev, i4Enable)) {

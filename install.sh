@@ -18,6 +18,7 @@ DO_WIFI=false
 DO_BT=false
 USE_DKMS=true
 USE_FALLBACK=false
+FORCE_CUSTOM=false
 FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
 FALLBACK_DIR="/tmp/mt7902-fallback"
 WIFI_DRIVER_USED=""
@@ -105,6 +106,8 @@ usage() {
     --bt          Install Bluetooth driver only
     --no-dkms     Build WiFi driver manually instead of using DKMS
     --fallback    Skip gen4 driver, use hmtheboy154/mt7902 directly
+    --force-custom Build the custom driver even if the kernel already
+                  supports 14c3:7902 in the in-tree mt7921e driver
     -h, --help    Show this message
 
   Examples:
@@ -128,6 +131,7 @@ for arg in "$@"; do
         --bt)       DO_BT=true ;;
         --no-dkms)  USE_DKMS=false ;;
         --fallback) USE_FALLBACK=true ;;
+        --force-custom) FORCE_CUSTOM=true ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $arg"; usage ;;
     esac
@@ -162,6 +166,37 @@ install_deps() {
         *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return ;;
     esac
     ok "Dependencies ready (${DISTRO})"
+}
+
+# ── in-tree support probe ─────────────────────────────────────
+# Linux 7.1 merged MT7902 (14c3:7902) support into the in-tree mt7921e driver,
+# with the firmware shipped in linux-firmware. On those kernels the stock driver
+# is the right answer and blacklisting it — as this installer used to do
+# unconditionally — replaces a working driver with a fragile one. Kernels up to
+# 6.19 list only 7920/0616/0608/7922/7961 and leave the device unclaimed; those
+# still need the driver in this repo. Probe the alias rather than the version
+# number, so distro kernels that backport the support are detected too.
+intree_supports_mt7902() {
+    modinfo mt7921e 2>/dev/null | grep -qi 'd00007902'
+}
+
+use_intree_driver() {
+    step "Using in-tree mt7921e (kernel ${KVER} supports 14c3:7902)"
+    # check_wifi_health() looks for the custom mt7902 module by name, so the
+    # in-tree driver needs its own check: module loaded and an interface up.
+    if try_modprobe mt7921e && sleep 2 && lsmod | grep -q '^mt7921e ' && \
+       ip link show 2>/dev/null | grep -qE 'wlan|wlp|wlo'; then
+        WIFI_DRIVER_USED="mt7921e (in-tree)"
+        ok "WiFi is up on the in-tree driver — nothing to build"
+        echo ""
+        echo -e "  ${DIM}Your kernel already supports this card. The custom driver${NC}"
+        echo -e "  ${DIM}is not needed and is not installed. To force it anyway:${NC}"
+        echo -e "    ${DIM}sudo ./install.sh --force-custom${NC}"
+        return 0
+    fi
+    warn "In-tree mt7921e did not bring the interface up; falling back to the custom driver"
+    rmmod mt7921e 2>/dev/null || true
+    return 1
 }
 
 # ── initramfs ─────────────────────────────────────────────────
@@ -348,6 +383,11 @@ install_wifi() {
     # detect firmware path (Arch uses /usr/lib/firmware, others use /lib/firmware)
     local FW_DIR="/lib/firmware"
     [ -d "/usr/lib/firmware" ] && ! [ -L "/lib" ] && FW_DIR="/usr/lib/firmware"
+
+    # ── prefer the in-tree driver when the kernel has 7902 support ──
+    if [ "$FORCE_CUSTOM" = false ] && [ "$USE_FALLBACK" = false ] && intree_supports_mt7902; then
+        use_intree_driver && return 0
+    fi
 
     # ── if --fallback flag used, skip gen4 entirely ────────────
     if [ "$USE_FALLBACK" = true ]; then

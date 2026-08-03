@@ -2,7 +2,25 @@
 
 Out-of-tree WiFi and Bluetooth drivers for the **MediaTek MT7902** M.2 PCIe wireless card on Linux.
 
-The MT7902 is not yet fully supported by the mainline `mt76` kernel driver, although MediaTek has started submitting official patches upstream (see [PATCH 01–11/11 series](https://lore.kernel.org/linux-wireless/?q=mt7902), Feb 2026). This repo bundles community-maintained out-of-tree drivers and forward-ports applicable upstream fixes so you can get both WiFi and Bluetooth working today.
+> **On kernel 7.1 or newer you probably do not need this repo.**
+> MT7902 (`14c3:7902`) support is merged into the in-tree `mt7921e` driver as of
+> **Linux 7.1**, and the firmware ships in `linux-firmware`. Upstream handles the
+> chip's quirks directly: it skips the MCU-WA ring, uses TXQ index 15 for MCU-WM
+> with a larger shared RX Ring0, clears `wm2_complete_mask` in its own IRQ map,
+> and leaves runtime PM disabled for this chip. Check your kernel with:
+>
+> ```sh
+> modinfo mt7921e | grep 7902     # a match means your kernel already supports it
+> ```
+>
+> `install.sh` performs this check and will use the in-tree driver instead of
+> building anything. Pass `--force-custom` to override.
+
+Older kernels (6.19 and earlier, including Ubuntu 24.04's 6.8) do **not** claim
+the device — `mt7921e` there lists only `7920/0616/0608/7922/7961`, so the card
+shows up as `UNCLAIMED`. This repo bundles community-maintained out-of-tree
+drivers and forward-ports applicable upstream fixes so those kernels get both
+WiFi and Bluetooth working today.
 
 | | Status | Notes |
 |-|--------|-------|
