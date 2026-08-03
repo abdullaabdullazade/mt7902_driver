@@ -245,26 +245,22 @@ intree_supports_mt7902() {
 }
 
 # hmtheboy154/mt7902 is mainline mt76 plus MediaTek's MT7902 series, backported
-# to older kernels. Its README states the supported range as 6.6~6.19. Outside
-# that range the build either fails or produces a module that cannot bind, so
-# check before spending several minutes on it.
+# to older kernels. Its README claims 6.6~6.19, but the tree also builds clean
+# against 7.0 (verified against the 7.0.0-070000-generic headers), which matters
+# because 7.0 is otherwise stranded: in-tree support only starts at 7.1.
+# Below 6.6 the backport does not apply and only the vendor tree is left.
 backport_supports_kernel() {
-    [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ] && [ "$KMINOR" -le 19 ]
+    { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ]; } || [ "$KMAJOR" -ge 7 ]
 }
 
-# 7.0 is the one release with neither in-tree support (landed in 7.1) nor
-# backport coverage (6.6~6.19). Say so instead of letting people burn an
-# afternoon on drivers that cannot work.
 warn_unsupported_kernel() {
     echo ""
-    echo -e "  ${YELLOW}━━━ KERNEL ${KMAJOR}.${KMINOR} IS A HARD CASE ━━━${NC}"
-    echo -e "  In-tree MT7902 support starts at ${BOLD}kernel 7.1${NC}."
-    echo -e "  The mt76 backport covers ${BOLD}6.6 - 6.19${NC}."
-    echo -e "  Your kernel is in neither range, so only the old vendor driver is"
-    echo -e "  left, and it frequently fails MCU init on this card."
+    echo -e "  ${YELLOW}━━━ KERNEL ${KMAJOR}.${KMINOR} IS TOO OLD ━━━${NC}"
+    echo -e "  The mt76 driver for this card needs ${BOLD}kernel 6.6 or newer${NC};"
+    echo -e "  ${BOLD}7.1+${NC} has it in-tree. Only the old vendor driver is left here,"
+    echo -e "  and it frequently fails MCU init on this card."
     echo ""
     echo -e "  ${WHITE}Best fix:${NC} move to kernel 7.1 or newer and use the stock driver."
-    echo -e "  ${WHITE}Also works:${NC} a 6.x kernel (<= 6.19) with this installer."
     echo ""
 }
 
@@ -506,7 +502,7 @@ install_wifi() {
             warn "mt76-based driver did not work; trying gen4-mt7902"
         else
             warn_unsupported_kernel
-            warn "Skipping the mt76 backport (kernel out of its 6.6-6.19 range)"
+            warn "Skipping the mt76 backport (needs kernel 6.6 or newer)"
         fi
     fi
 

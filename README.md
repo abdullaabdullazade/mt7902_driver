@@ -27,8 +27,7 @@ WiFi and Bluetooth working today.
 | Kernel | What to use | Notes |
 |--------|-------------|-------|
 | **7.1 and newer** | in-tree `mt7921e` | Nothing to install. `install.sh` detects this and exits early. |
-| **6.6 – 6.19** | [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) | Mainline mt76 + MediaTek's MT7902 series, backported. `install.sh` uses it by default. |
-| **7.0** | *no good option* | In-tree support starts at 7.1; the backport covers up to 6.19. Move to 7.1+ (or back to a 6.x kernel). `install.sh` warns instead of pretending. |
+| **6.6 – 7.0** | [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) | Mainline mt76 + MediaTek's MT7902 series, backported. `install.sh` uses it by default. Its README says 6.6~6.19, but the tree builds clean against 7.0 too — verified here against the `7.0.0-070000-generic` headers — which matters because 7.0 has no in-tree support either. |
 | **older than 6.6** | bundled `gen4-mt7902` | Vendor tree; frequently fails MCU init. Last resort. |
 
 Firmware ships in `linux-firmware` as of its 20260309 release. If your system
@@ -65,18 +64,28 @@ sudo ./install.sh --no-dkms  # skip DKMS, compile manually
 
 ### Automatic driver selection
 
-The installer automatically detects whether the gen4-mt7902 driver works on your hardware. After loading the module it checks:
+The installer picks the driver that suits your kernel, in this order:
 
-1. **Module loaded** — `mt7902` appears in `lsmod`
-2. **No kernel errors** — `dmesg` is clean (no panics, MCU failures, BAR0 errors)
-3. **WiFi interface appeared** — a `wlan*` / `wlp*` / `wlo*` device shows up
+1. **In-tree `mt7921e`**, if `modinfo mt7921e` shows the `14c3:7902` alias
+   (kernel 7.1+). Nothing is built, nothing is blacklisted.
+2. **[hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902)** — mainline
+   mt76 with MediaTek's MT7902 patches — on kernel 6.6 and newer.
+3. **Bundled `gen4-mt7902`**, only if the above did not work. After loading it
+   the installer checks that `mt7902` is in `lsmod`, that `dmesg` is clean, and
+   that a `wlan*` / `wlp*` / `wlo*` interface appeared; if not, it removes the
+   driver again rather than leaving a half-installed system behind.
 
-If any check fails, the installer **automatically falls back** to the alternative driver by **[hmtheboy154](https://github.com/hmtheboy154)**: [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) (supports kernel 6.6–6.19).
+gen4-mt7902 is tried last on purpose: it is a vendor tree that frequently fails
+MCU init on this card (`wlanAccessRegister: Event reports address incorrect`,
+`Fail reason: 4`), which is what its `mcu_bypass` and `disable_rpm` options
+exist to work around.
 
-You can also force the fallback driver directly:
+To override the order:
 
 ```sh
-sudo ./install.sh --fallback  # skip gen4, use hmtheboy154/mt7902
+sudo ./install.sh --fallback      # go straight to hmtheboy154/mt7902
+sudo ./install.sh --gen4          # try the bundled vendor driver first
+sudo ./install.sh --force-custom  # build even if the kernel has in-tree support
 ```
 
 Or install it manually:
