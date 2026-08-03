@@ -20,6 +20,7 @@ USE_DKMS=true
 USE_FALLBACK=false
 FORCE_CUSTOM=false
 PREFER_GEN4=false
+DO_KERNEL_UPGRADE=false
 FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
 FALLBACK_DIR="/tmp/mt7902-fallback"
 WIFI_DRIVER_USED=""
@@ -111,6 +112,10 @@ usage() {
                   supports 14c3:7902 in the in-tree mt7921e driver
     --gen4        Try the bundled gen4-mt7902 vendor driver before the
                   mt76-based one (default order is the other way round)
+    --upgrade-kernel
+                  Offer to install a mainline 7.1 kernel, which supports this
+                  card in-tree. Asks for confirmation; never reboots for you.
+                  Debian/Ubuntu only, and refused under Secure Boot.
     -h, --help    Show this message
 
   Examples:
@@ -136,6 +141,7 @@ for arg in "$@"; do
         --fallback) USE_FALLBACK=true ;;
         --force-custom) FORCE_CUSTOM=true ;;
         --gen4)     PREFER_GEN4=true ;;
+        --upgrade-kernel) DO_KERNEL_UPGRADE=true ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $arg"; usage ;;
     esac
@@ -187,6 +193,137 @@ install_deps() {
         return 0
     fi
     ok "Dependencies ready (${DISTRO})"
+}
+
+# ── optional kernel upgrade ───────────────────────────────────
+# Only ever runs behind --upgrade-kernel, and only after the user types "yes".
+# Replacing someone's kernel is not something a WiFi driver installer should
+# decide on its own: it can strand out-of-tree DKMS modules, and an unsigned
+# mainline build will not boot at all with Secure Boot on.
+secure_boot_enabled() {
+    if command -v mokutil >/dev/null 2>&1; then
+        mokutil --sb-state 2>/dev/null | grep -qi "SecureBoot enabled" && return 0
+    fi
+    local f
+    for f in /sys/firmware/efi/efivars/SecureBoot-*; do
+        [ -e "$f" ] || continue
+        # 5th byte is the flag
+        [ "$(od -An -t u1 -j 4 -N 1 "$f" 2>/dev/null | tr -d ' ')" = "1" ] && return 0
+    done
+    return 1
+}
+
+upgrade_kernel() {
+    step "Kernel upgrade requested (--upgrade-kernel)"
+
+    if intree_supports_mt7902; then
+        ok "This kernel already supports the card — no upgrade needed"
+        return 0
+    fi
+
+    if [ "$DISTRO" != "debian" ]; then
+        warn "Automatic upgrade is only wired up for Debian/Ubuntu here."
+        suggest_kernel_upgrade
+        return 1
+    fi
+
+    if secure_boot_enabled; then
+        fail "Secure Boot is enabled."
+        fail "Mainline kernel builds are unsigned and will not boot with it on."
+        fail "Use your distribution's own signed kernel instead:"
+        echo -e "    ${DIM}sudo apt update && sudo apt full-upgrade${NC}"
+        return 1
+    fi
+
+    local base="https://kernel.ubuntu.com/mainline"
+    step "Finding the newest 7.1.x build"
+    local ver
+    ver=$(curl -fsSL --max-time 60 "${base}/" 2>/dev/null |
+          grep -oE 'v7\.1(\.[0-9]+)?/' | tr -d '/' | sort -uV | tail -1)
+    [ -n "$ver" ] || { fail "Could not reach ${base}"; return 1; }
+    ok "Newest build: ${ver}"
+
+    local dir="${base}/${ver}/amd64"
+    local sums
+    sums=$(curl -fsSL --max-time 60 "${dir}/CHECKSUMS" 2>/dev/null) ||
+        { fail "Could not fetch CHECKSUMS for ${ver}"; return 1; }
+
+    local img mod
+    img=$(echo "$sums" | grep -oE 'linux-image-unsigned-[^ ]*_amd64\.deb' | head -1)
+    mod=$(echo "$sums" | grep -oE 'linux-modules-[^ ]*_amd64\.deb' | head -1)
+    [ -n "$img" ] && [ -n "$mod" ] || { fail "Unexpected file listing for ${ver}"; return 1; }
+
+    echo ""
+    echo -e "  ${YELLOW}This will install an unsigned mainline kernel:${NC}"
+    echo -e "    ${DIM}${img}${NC}"
+    echo -e "    ${DIM}${mod}${NC}"
+    echo -e "  ${DIM}Source: ${dir}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}It is not supported by your distribution.${NC} Your current kernel stays"
+    echo -e "  installed and selectable from the GRUB menu. Out-of-tree modules"
+    echo -e "  (NVIDIA, VirtualBox, ...) will need rebuilding for the new kernel."
+    echo ""
+    printf "  Type %byes%b to continue: " "${BOLD}" "${NC}"
+    local answer=""
+    read -r answer < /dev/tty || true
+    if [ "$answer" != "yes" ]; then
+        warn "Kernel upgrade cancelled"
+        return 1
+    fi
+
+    local tmp
+    tmp=$(mktemp -d /tmp/mt7902-kernel-XXXXXX)
+    step "Downloading ${ver}"
+    local f
+    for f in "$mod" "$img"; do
+        curl -fsSL --max-time 900 -o "${tmp}/${f}" "${dir}/${f}" ||
+            { fail "Download failed: ${f}"; rm -rf "$tmp"; return 1; }
+    done
+
+    step "Verifying checksums"
+    for f in "$mod" "$img"; do
+        local want got
+        want=$(echo "$sums" | grep -E "^[0-9a-f]{64}  ${f}$" | awk '{print $1}' | head -1)
+        got=$(sha256sum "${tmp}/${f}" | awk '{print $1}')
+        if [ -z "$want" ] || [ "$want" != "$got" ]; then
+            fail "Checksum mismatch for ${f} — refusing to install"
+            rm -rf "$tmp"
+            return 1
+        fi
+    done
+    ok "Checksums verified"
+
+    step "Installing ${ver}"
+    # Minimal images (cloud, server, containers) are missing pieces the kernel
+    # postinst expects; without them its triggers fail with
+    # "run-parts: missing operand" even though the kernel itself unpacked fine.
+    apt-get install -y linux-base initramfs-tools grub2-common > /dev/null 2>&1 || true
+
+    # apt resolves dependencies where a bare dpkg -i cannot.
+    if ! apt-get install -y "${tmp}/${mod}" "${tmp}/${img}" > "${tmp}/apt.log" 2>&1; then
+        dpkg -i "${tmp}/${mod}" "${tmp}/${img}" > "${tmp}/dpkg.log" 2>&1 || true
+    fi
+    dpkg --configure -a > /dev/null 2>&1 || true
+    apt-get install -f -y > /dev/null 2>&1 || true
+
+    # Judge by what ended up on disk, not by the exit status of a trigger.
+    local kver_new="${ver#v}"
+    local img_file
+    img_file=$(ls /boot/vmlinuz-*"${kver_new}"* 2>/dev/null | head -1)
+    if [ -z "$img_file" ]; then
+        fail "Kernel ${ver} did not install — logs in ${tmp}"
+        return 1
+    fi
+
+    command -v update-grub >/dev/null 2>&1 && update-grub > /dev/null 2>&1 || true
+    ok "Kernel ${ver} installed ($(basename "$img_file"))"
+    rm -rf "$tmp"
+
+    echo ""
+    echo -e "  ${WHITE}Reboot into the new kernel, then run this script again.${NC}"
+    echo -e "  ${DIM}It will find the in-tree driver and install nothing.${NC}"
+    echo ""
+    return 0
 }
 
 # ── wireless interface detection ──────────────────────────────
@@ -574,9 +711,29 @@ install_wifi() {
         dkms install -m gen4-mt7902 -v 0.1
         ok "DKMS module registered (auto-rebuild on kernel updates)"
     else
+        # `make -j$(nproc)` under `set -e` still lets the script continue when
+        # make itself is missing, so this used to report a successful build on
+        # a machine with no toolchain at all.
+        if ! command -v make >/dev/null 2>&1; then
+            fail "make is not installed — cannot build the driver"
+            fail "Install your distribution's kernel build tools and try again."
+            return 1
+        fi
+        if [ ! -d "/lib/modules/${KVER}/build" ]; then
+            fail "No kernel headers at /lib/modules/${KVER}/build — cannot build"
+            return 1
+        fi
         cd "$src"
-        make -j$(nproc)
-        make install -j$(nproc)
+        if ! make -j"$(nproc)"; then
+            cd "$SCRIPT_DIR"
+            fail "Driver build failed"
+            return 1
+        fi
+        if ! make install -j"$(nproc)"; then
+            cd "$SCRIPT_DIR"
+            fail "Driver install failed"
+            return 1
+        fi
         cd "$SCRIPT_DIR"
         ok "Module built and installed manually"
     fi
@@ -799,6 +956,11 @@ EOF
 detect_distro
 show_banner
 show_info_box
+
+if [ "$DO_KERNEL_UPGRADE" = true ]; then
+    upgrade_kernel || true
+    exit 0
+fi
 
 # On a kernel that already supports the card there is nothing to compile, so
 # do not drag the user through a package install first — on mainline or vendor
