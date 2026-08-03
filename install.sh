@@ -498,6 +498,14 @@ mt7902_present() {
     return 1
 }
 
+# Kernel 7.1 carries MT7902 Bluetooth upstream alongside the WiFi support, so
+# its btusb/btmtk already cover this chip and must not be replaced with the
+# older sources bundled here. Below 7.1 the backport is still needed — 7.0 in
+# particular has neither in-tree support nor a reason to skip the build.
+bt_intree_supported() {
+    [ "$KMAJOR" -gt 7 ] || { [ "$KMAJOR" -eq 7 ] && [ "$KMINOR" -ge 1 ]; }
+}
+
 # ── wireless interface detection ──────────────────────────────
 # Do not match on interface names. systemd's predictable naming produces wls*
 # on some machines — a real MT7902 on kernel 7.1 comes up as "wls4" — and a
@@ -1037,6 +1045,20 @@ install_bt() {
 
     step "Locating Bluetooth source for kernel ${KVER}"
 
+    # Kernel 7.1+ ships btusb/btmtk with MT7902 support. Building the older
+    # sources bundled here against it would replace working modules with a
+    # downgrade, so leave them alone.
+    if bt_intree_supported; then
+        ok "Kernel ${KMAJOR}.${KMINOR} carries Bluetooth support for this chip"
+        echo -e "      ${DIM}Its own btusb/btmtk are newer than the sources here — not replacing them.${NC}"
+        if [ -f /etc/modprobe.d/mt7902-blacklist.conf ]; then
+            warn "Removing a stale blacklist that would stop them loading"
+            rm -f /etc/modprobe.d/mt7902-blacklist.conf
+            ok "Removed /etc/modprobe.d/mt7902-blacklist.conf"
+        fi
+        return 0
+    fi
+
     if [ -d "${base}/${tag}/drivers/bluetooth" ]; then
         bt_dir="${base}/${tag}/drivers/bluetooth"
         ok "Exact match: ${tag}"
@@ -1194,18 +1216,28 @@ fi
 # do not drag the user through a package install first — on mainline or vendor
 # kernels the headers package often does not exist and that used to abort the
 # whole run at step 1.
-if [ "$DO_WIFI" = true ] && [ "$DO_BT" = false ] && \
+if [ "$DO_WIFI" = true ] && \
    [ "$FORCE_CUSTOM" = false ] && [ "$USE_FALLBACK" = false ] && \
    intree_supports_mt7902; then
     echo ""
     echo -e "  ${WHITE}── WiFi ──────────────────────────────────${NC}"
     if use_intree_driver; then
-        echo ""
-        echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
-        echo -e "  ${GREEN}${BOLD}Nothing to install.${NC}"
-        echo -e "  ${WHITE}WiFi driver:${NC} ${CYAN}${WIFI_DRIVER_USED}${NC}"
-        echo ""
-        exit 0
+        DO_WIFI=false
+        if [ "$DO_BT" = true ] && bt_intree_supported; then
+            echo ""
+            ok "Kernel ${KMAJOR}.${KMINOR} also carries Bluetooth support for this chip"
+            rm -f /etc/modprobe.d/mt7902-blacklist.conf 2>/dev/null &&
+                ok "Removed a stale blacklist that would stop btusb/btmtk loading" || true
+            DO_BT=false
+        fi
+        if [ "$DO_BT" = false ]; then
+            echo ""
+            echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
+            echo -e "  ${GREEN}${BOLD}Nothing to install.${NC}"
+            echo -e "  ${WHITE}WiFi driver:${NC} ${CYAN}${WIFI_DRIVER_USED}${NC}"
+            echo ""
+            exit 0
+        fi
     fi
 fi
 
