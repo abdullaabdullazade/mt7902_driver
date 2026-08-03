@@ -21,6 +21,7 @@ USE_FALLBACK=false
 FORCE_CUSTOM=false
 PREFER_GEN4=false
 DO_KERNEL_UPGRADE=false
+SKIP_CARD_CHECK=false
 FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
 FALLBACK_DIR="/tmp/mt7902-fallback"
 WIFI_DRIVER_USED=""
@@ -116,6 +117,8 @@ usage() {
                   Offer to install a mainline 7.1 kernel, which supports this
                   card in-tree. Asks for confirmation; never reboots for you.
                   Debian/Ubuntu only, and refused under Secure Boot.
+    --no-card-check
+                  Install even when no MT7902 is present on the PCI bus
     -h, --help    Show this message
 
   Examples:
@@ -142,6 +145,7 @@ for arg in "$@"; do
         --force-custom) FORCE_CUSTOM=true ;;
         --gen4)     PREFER_GEN4=true ;;
         --upgrade-kernel) DO_KERNEL_UPGRADE=true ;;
+        --no-card-check) SKIP_CARD_CHECK=true ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $arg"; usage ;;
     esac
@@ -459,6 +463,22 @@ upgrade_kernel() {
     echo -e "  ${DIM}It will find the in-tree driver and install nothing.${NC}"
     echo ""
     return 0
+}
+
+# ── card presence ─────────────────────────────────────────────
+# Without this, a machine that has no MT7902 builds every driver in turn and
+# finishes with "both drivers failed", which reads like the drivers are broken
+# rather than like the card is absent. Read sysfs rather than shelling out to
+# lspci, which is not installed everywhere.
+mt7902_present() {
+    local d vendor device
+    for d in /sys/bus/pci/devices/*; do
+        [ -r "$d/vendor" ] && [ -r "$d/device" ] || continue
+        read -r vendor < "$d/vendor"
+        read -r device < "$d/device"
+        [ "$vendor" = "0x14c3" ] && [ "$device" = "0x7902" ] && return 0
+    done
+    return 1
 }
 
 # ── wireless interface detection ──────────────────────────────
@@ -1137,6 +1157,19 @@ show_info_box
 
 if [ "$DO_KERNEL_UPGRADE" = true ]; then
     upgrade_kernel || true
+    exit 0
+fi
+
+if [ "$DO_WIFI" = true ] && [ "$SKIP_CARD_CHECK" = false ] && ! mt7902_present; then
+    echo -e "  ${YELLOW}No MT7902 (14c3:7902) found on the PCI bus.${NC}"
+    echo ""
+    echo -e "  ${DIM}Nothing here applies to this machine. If the card is fitted but${NC}"
+    echo -e "  ${DIM}not showing up, check that it is seated and enabled in firmware:${NC}"
+    echo -e "    ${DIM}lspci -nn | grep -i 14c3${NC}"
+    echo ""
+    echo -e "  ${DIM}To install anyway (building for another machine, testing):${NC}"
+    echo -e "    ${DIM}sudo ./install.sh --wifi --no-card-check${NC}"
+    echo ""
     exit 0
 fi
 
