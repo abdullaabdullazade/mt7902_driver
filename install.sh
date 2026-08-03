@@ -213,6 +213,32 @@ secure_boot_enabled() {
     return 1
 }
 
+# Shown before anything is built, so nobody sits through a driver install
+# without knowing that a kernel upgrade solves the problem outright.
+announce_kernel_situation() {
+    intree_supports_mt7902 && return 0
+
+    echo -e "  ${YELLOW}━━━ HEADS UP ━━━${NC}"
+    echo -e "  Your kernel is ${BOLD}${KMAJOR}.${KMINOR}${NC}, which has no MT7902 support of its own."
+    echo -e "  ${BOLD}Kernel 7.1 and newer support this card out of the box${NC} — no"
+    echo -e "  out-of-tree driver, no DKMS, nothing to rebuild on every update."
+    echo ""
+    echo -e "  ${WHITE}The real fix is to upgrade the kernel:${NC}"
+    case "$DISTRO" in
+        debian) echo -e "    ${CYAN}sudo apt update && sudo apt full-upgrade${NC}"
+                echo -e "    ${DIM}or, for a mainline build: sudo ./install.sh --upgrade-kernel${NC}" ;;
+        fedora) echo -e "    ${CYAN}sudo dnf upgrade --refresh${NC}" ;;
+        arch)   echo -e "    ${CYAN}sudo pacman -Syu${NC}" ;;
+        suse)   echo -e "    ${CYAN}sudo zypper dup${NC}" ;;
+        *)      echo -e "    ${CYAN}Update through your distribution's usual channel${NC}" ;;
+    esac
+    echo ""
+    echo -e "  ${DIM}Carrying on for now and installing the best driver available${NC}"
+    echo -e "  ${DIM}for ${KMAJOR}.${KMINOR}. Press Ctrl+C within 5s to stop and upgrade instead.${NC}"
+    echo ""
+    sleep 5
+}
+
 upgrade_kernel() {
     step "Kernel upgrade requested (--upgrade-kernel)"
 
@@ -981,6 +1007,10 @@ if [ "$DO_WIFI" = true ] && [ "$DO_BT" = false ] && \
     fi
 fi
 
+if [ "$DO_WIFI" = true ]; then
+    announce_kernel_situation
+fi
+
 install_deps
 
 WIFI_FAILED=false
@@ -1033,10 +1063,11 @@ elif [[ "$WIFI_DRIVER_USED" == *"hmtheboy154"* ]]; then
     echo -e "  ${DIM}Source: https://github.com/hmtheboy154/mt7902${NC}"
 fi
 
-# Anything other than the in-tree driver means the kernel is older than 7.1.
+# Anything other than the in-tree driver means the kernel is older than 7.1;
+# the full explanation was printed before the install started.
 if [ "$DO_WIFI" = true ] && [ -n "$WIFI_DRIVER_USED" ] && \
    [[ "$WIFI_DRIVER_USED" != *"in-tree"* ]]; then
-    suggest_kernel_upgrade
+    echo -e "  ${DIM}Reminder: kernel 7.1+ supports this card without any of this.${NC}"
 fi
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
