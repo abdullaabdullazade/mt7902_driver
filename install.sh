@@ -304,16 +304,22 @@ run_distro_upgrade() {
         min=${min//[!0-9]/}
         if [ -n "$maj" ] && [ -n "$min" ] &&
            { [ "$maj" -lt 7 ] || { [ "$maj" -eq 7 ] && [ "$min" -lt 1 ]; }; }; then
-            warn "Newest kernel available to you is ${avail} — still below 7.1"
+            warn "Newest kernel your distribution offers is ${avail} — below 7.1"
             echo ""
-            echo -e "  ${DIM}A full system upgrade would download gigabytes and leave you${NC}"
-            echo -e "  ${DIM}on the same kernel series, so it will not help with this card${NC}"
-            echo -e "  ${DIM}yet. The driver installed by this script is the right answer${NC}"
-            echo -e "  ${DIM}until your distribution ships 7.1.${NC}"
+            echo -e "  ${DIM}So this will not give you in-tree support for the card yet.${NC}"
+            echo -e "  ${DIM}It still updates the system and the kernel within its series,${NC}"
+            echo -e "  ${DIM}which is worth doing on its own — it is just a large download.${NC}"
             echo ""
-            return 1
+            printf "  Run a full system update anyway? [y/%bN%b] " "${BOLD}" "${NC}"
+            local go=""
+            read -r go < /dev/tty || go=""
+            case "$go" in
+                y|Y|yes|YES) ;;
+                *) warn "Skipped — continuing with the driver install"; return 1 ;;
+            esac
+        else
+            ok "Kernel ${avail} is available — this will give you in-tree support"
         fi
-        ok "Kernel ${avail} is available"
     else
         warn "Could not determine which kernel your distribution offers"
     fi
@@ -327,7 +333,9 @@ run_distro_upgrade() {
     read -r answer < /dev/tty || true
     [ "$answer" = "yes" ] || { warn "Cancelled"; return 1; }
 
-    step "Running system upgrade"
+    step "Running system upgrade — this downloads a lot and takes a while"
+    echo -e "  ${DIM}Leave it alone until it finishes; output below is the package manager's.${NC}"
+    echo ""
     if ! $cmd; then
         fail "System upgrade failed"
         return 1

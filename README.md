@@ -34,6 +34,35 @@ Firmware ships in `linux-firmware` as of its 20260309 release. If your system
 already has it, `install.sh` leaves those files alone rather than overwriting
 them with the copies bundled here.
 
+### Moving to the in-tree driver later
+
+If you would rather run the driver the kernel ships than one from here, you
+need kernel 7.1 or newer. How you get there depends on the distribution:
+
+| Distribution | Path to 7.1 |
+|---|---|
+| Arch, openSUSE Tumbleweed | `sudo pacman -Syu` / `sudo zypper dup` — rolling, so it is probably there already |
+| Fedora | Fedora ships new kernel series to existing releases, so `sudo dnf upgrade --refresh` gets you there once 7.1 lands for your release |
+| Ubuntu / Debian stable | A release does not move to a new kernel series. Either upgrade to a release that ships 7.1, or install a mainline build with `sudo ./install.sh --upgrade-kernel` |
+| Ubuntu LTS | The HWE stack tracks newer kernels, but only as far as the LTS provides |
+
+`install.sh --upgrade-kernel` installs an **unsigned mainline** kernel. It will
+not boot with Secure Boot enabled (the installer checks and refuses), it is not
+supported by your distribution, and you update it by installing the next build
+yourself. It suits testing more than a daily machine — a distribution that
+ships 7.1 is the better long-term answer.
+
+Once you are on 7.1, remove what this repo installed before relying on the
+in-tree driver, otherwise the blacklist here keeps `mt7921e` from binding:
+
+```sh
+sudo ./uninstall.sh
+sudo reboot
+```
+
+After the reboot `mt7921e` claims the card on its own. Running `install.sh`
+again is harmless — it detects in-tree support and installs nothing.
+
 | | Status | Notes |
 |-|--------|-------|
 | WiFi (2.4 GHz) | Working | Stable on most hardware |
