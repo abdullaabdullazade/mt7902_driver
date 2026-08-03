@@ -162,14 +162,45 @@ detect_distro() {
 
 install_deps() {
     step "Installing build dependencies"
+    local rc=0
     case "$DISTRO" in
-        debian) apt-get update -qq && apt-get install -y build-essential linux-headers-$(uname -r) dkms zstd git > /dev/null 2>&1 ;;
-        fedora) dnf install -y make gcc kernel-devel kernel-headers dkms zstd git > /dev/null 2>&1 ;;
-        arch)   pacman -S --needed --noconfirm base-devel linux-headers dkms zstd git > /dev/null 2>&1 ;;
-        suse)   zypper install -y make gcc kernel-devel dkms zstd git > /dev/null 2>&1 ;;
-        *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return ;;
+        debian) apt-get update -qq >/dev/null 2>&1
+                apt-get install -y build-essential linux-headers-$(uname -r) dkms zstd git > /dev/null 2>&1 || rc=$? ;;
+        fedora) dnf install -y make gcc kernel-devel kernel-headers dkms zstd git > /dev/null 2>&1 || rc=$? ;;
+        arch)   pacman -S --needed --noconfirm base-devel linux-headers dkms zstd git > /dev/null 2>&1 || rc=$? ;;
+        suse)   zypper install -y make gcc kernel-devel dkms zstd git > /dev/null 2>&1 || rc=$? ;;
+        *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return 0 ;;
     esac
+
+    if [ "$rc" -ne 0 ]; then
+        # Mainline or vendor kernels often have no matching headers package in
+        # the distribution's repositories. That is not fatal on its own — the
+        # headers may already be installed, or the in-tree driver may make the
+        # whole build unnecessary — so carry on and let the build be the judge.
+        warn "Could not install every build dependency (package manager exit ${rc})"
+        if [ -d "/lib/modules/${KVER}/build" ]; then
+            ok "Kernel headers for ${KVER} are present, continuing"
+        else
+            warn "No kernel headers found at /lib/modules/${KVER}/build"
+            warn "If a build fails below, install the headers for your kernel first"
+        fi
+        return 0
+    fi
     ok "Dependencies ready (${DISTRO})"
+}
+
+# ── wireless interface detection ──────────────────────────────
+# Do not match on interface names. systemd's predictable naming produces wls*
+# on some machines — a real MT7902 on kernel 7.1 comes up as "wls4" — and a
+# wlan*/wlp*/wlo* pattern misses it, so a working driver gets reported as
+# broken and torn out again. Ask the kernel instead: every wireless netdev has
+# a "wireless" directory in sysfs.
+wireless_iface_present() {
+    local d
+    for d in /sys/class/net/*/wireless; do
+        [ -d "$d" ] && return 0
+    done
+    return 1
 }
 
 # ── firmware installation ─────────────────────────────────────
@@ -253,6 +284,28 @@ backport_supports_kernel() {
     { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ]; } || [ "$KMAJOR" -ge 7 ]
 }
 
+# Everything this repo installs is a workaround for running a kernel older than
+# 7.1. Say so once, with the command for the distro at hand, and let the user
+# decide — an installer for a WiFi driver has no business replacing someone's
+# kernel behind their back, which can break DKMS modules, Secure Boot signing
+# and the boot itself.
+suggest_kernel_upgrade() {
+    echo ""
+    echo -e "  ${DIM}Kernel 7.1+ supports this card out of the box, with no${NC}"
+    echo -e "  ${DIM}out-of-tree driver at all. If you want to get there:${NC}"
+    case "$DISTRO" in
+        debian) echo -e "    ${DIM}sudo apt update && sudo apt full-upgrade${NC}"
+                echo -e "    ${DIM}(Ubuntu: a newer HWE stack, e.g. linux-generic-hwe-<release>)${NC}" ;;
+        fedora) echo -e "    ${DIM}sudo dnf upgrade --refresh${NC}" ;;
+        arch)   echo -e "    ${DIM}sudo pacman -Syu${NC}" ;;
+        suse)   echo -e "    ${DIM}sudo zypper dup${NC}" ;;
+        *)      echo -e "    ${DIM}Update through your distribution's usual channel${NC}" ;;
+    esac
+    echo -e "  ${DIM}Then re-run this script — it will detect the in-tree driver${NC}"
+    echo -e "  ${DIM}and remove the need for anything installed here.${NC}"
+    echo ""
+}
+
 warn_unsupported_kernel() {
     echo ""
     echo -e "  ${YELLOW}━━━ KERNEL ${KMAJOR}.${KMINOR} IS TOO OLD ━━━${NC}"
@@ -269,7 +322,7 @@ use_intree_driver() {
     # check_wifi_health() looks for the custom mt7902 module by name, so the
     # in-tree driver needs its own check: module loaded and an interface up.
     if try_modprobe mt7921e && sleep 2 && lsmod | grep -q '^mt7921e ' && \
-       ip link show 2>/dev/null | grep -qE 'wlan|wlp|wlo'; then
+       wireless_iface_present; then
         WIFI_DRIVER_USED="mt7921e (in-tree)"
         ok "WiFi is up on the in-tree driver — nothing to build"
         echo ""
@@ -352,8 +405,8 @@ check_wifi_health() {
 
     # 3. Check if a WiFi interface appeared (wlan*, wlp*, etc.)
     sleep 2  # give the interface a moment to register
-    if ! ip link show 2>/dev/null | grep -qE 'wlan|wlp|wlo'; then
-        warn "No WiFi interface detected (wlan*/wlp*/wlo*)"
+    if ! wireless_iface_present; then
+        warn "No WiFi interface appeared"
         healthy=false
     fi
 
@@ -747,6 +800,25 @@ detect_distro
 show_banner
 show_info_box
 
+# On a kernel that already supports the card there is nothing to compile, so
+# do not drag the user through a package install first — on mainline or vendor
+# kernels the headers package often does not exist and that used to abort the
+# whole run at step 1.
+if [ "$DO_WIFI" = true ] && [ "$DO_BT" = false ] && \
+   [ "$FORCE_CUSTOM" = false ] && [ "$USE_FALLBACK" = false ] && \
+   intree_supports_mt7902; then
+    echo ""
+    echo -e "  ${WHITE}── WiFi ──────────────────────────────────${NC}"
+    if use_intree_driver; then
+        echo ""
+        echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
+        echo -e "  ${GREEN}${BOLD}Nothing to install.${NC}"
+        echo -e "  ${WHITE}WiFi driver:${NC} ${CYAN}${WIFI_DRIVER_USED}${NC}"
+        echo ""
+        exit 0
+    fi
+fi
+
 install_deps
 
 WIFI_FAILED=false
@@ -797,6 +869,12 @@ if [[ "$WIFI_DRIVER_USED" == *"gen4"* ]]; then
 elif [[ "$WIFI_DRIVER_USED" == *"hmtheboy154"* ]]; then
     echo -e "  ${DIM}Using alternative driver by hmtheboy154.${NC}"
     echo -e "  ${DIM}Source: https://github.com/hmtheboy154/mt7902${NC}"
+fi
+
+# Anything other than the in-tree driver means the kernel is older than 7.1.
+if [ "$DO_WIFI" = true ] && [ -n "$WIFI_DRIVER_USED" ] && \
+   [[ "$WIFI_DRIVER_USED" != *"in-tree"* ]]; then
+    suggest_kernel_upgrade
 fi
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
