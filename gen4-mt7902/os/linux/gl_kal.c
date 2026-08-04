@@ -9572,13 +9572,7 @@ void kalIndicateChannelSwitch(IN struct GLUE_INFO *prGlueInfo,
 
 	cfg80211_chandef_create(&chandef, prChannel, rChannelType);
 #if (CFG_ADVANCED_80211_MLO == 1)
-/* punct_bitmap was added in 6.3 and dropped again in 6.9 */
-#if (CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) && \
-	(CFG80211_VERSION_CODE < KERNEL_VERSION(6, 9, 0))
-	cfg80211_ch_switch_notify(prGlueInfo->prDevHandler, &chandef, linkIdx, 0);
-#else
 	cfg80211_ch_switch_notify(prGlueInfo->prDevHandler, &chandef, linkIdx);
-#endif
 #else
 	cfg80211_ch_switch_notify(prGlueInfo->prDevHandler, &chandef);
 #endif
