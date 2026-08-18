@@ -12,7 +12,6 @@
 *.rej
 *.order
 *.symvers
+*.ko.zst
 
-
-firmware/
 .backup/
