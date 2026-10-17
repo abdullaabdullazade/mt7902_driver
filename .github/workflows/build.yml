@@ -1,0 +1,51 @@
+name: Build
+
+# Compiles every driver this repository installs against the Ubuntu kernels
+# people actually run it on, so a change or an upstream sync that breaks the
+# build is caught before it reaches anyone's machine. (It does not load the
+# drivers — there is no card in CI.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ['6.8', '6.11', '6.14', '6.17', '7.0']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain and headers
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential kmod bc git ca-certificates >/dev/null
+          if [ "${{ matrix.kernel }}" = 7.0 ]; then pat='^linux-headers-7\.0\.0-[0-9]+-generic$'
+          else pat="^linux-headers-${{ matrix.kernel }}\.0-[0-9]+-generic$"; fi
+          pkg=$(apt-cache search --names-only "$pat" | awk '{print $1}' | sort -V | tail -1)
+          echo "headers: $pkg"
+          apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null
+          echo "KVER=${pkg#linux-headers-}" >> "$GITHUB_ENV"
+      - name: mt7902e (hmtheboy154/mt7902 + fixes)
+        run: make -C mt7902 KVER="$KVER"
+      - name: morrownr/mt76 (6.12+)
+        if: matrix.kernel != '6.8' && matrix.kernel != '6.11'
+        run: make -C mt76 KVER="$KVER" -j"$(nproc)"
+      - name: Bluetooth (btusb + btmtk)
+        run: |
+          pkg=$(mktemp -d); mkdir -p "$pkg/src"
+          cp -r bluetooth-dkms/. "$pkg/"
+          for d in mt7902_temp/linux-*/drivers/bluetooth; do
+            v=$(basename "$(dirname "$(dirname "$d")")"); mkdir -p "$pkg/src/$v"
+            cp "$d"/btusb.c "$d"/btmtk.c "$d"/*.h "$pkg/src/$v/"
+          done
+          make -C "$pkg" KVER="$KVER"
+      - name: Shell scripts
+        run: |
+          apt-get install -y -qq shellcheck >/dev/null
+          shellcheck -S error -x install.sh uninstall.sh lib.sh bluetooth-dkms/select-src.sh
