@@ -72,7 +72,7 @@ again is harmless — it detects in-tree support and installs nothing.
 | | Status | Notes |
 |-|--------|-------|
 | WiFi (2.4 GHz) | Working | Stable on most hardware |
-| WiFi (5 GHz) | Partial | May not switch bands on dual-band SSIDs |
+| WiFi (5 GHz) | Working | Associates on 5 GHz (VHT, 40 MHz) in testing; band steering on dual-band SSIDs untested |
 | WiFi (6 GHz / 6E) | Untested | Kernel 5.4+ required for 6G support |
 | Bluetooth | Working | Patched `btusb` + `btmtk` modules |
 
@@ -277,6 +277,15 @@ Should work on other MT7902-based PCIe cards. Minimum kernel: 5.4.
 | System | Kernel | WiFi | Bluetooth |
 |--------|--------|------|-----------|
 | Arch Linux (x86_64) | 6.18.9-arch1-2 | ✅ Working | ✅ Working |
+| Ubuntu 24.04, `mt7902e` | 6.8.0-147-generic | ✅ 5 GHz, connect + ping | ✅ |
+| Ubuntu 24.04 HWE, `mt7902e` | 7.0.0-38-generic | ✅ 5 GHz, connect + ping | ✅ |
+| Ubuntu 24.04 HWE, `--mt76` | 7.0.0-38-generic | ✅ 5 GHz, connect + ping | ✅ |
+
+The three Ubuntu rows were run on an ASUS Vivobook (MT7902, Bluetooth
+`13d3:3579`) with the card passed through to a VM: install, reboot, scan,
+association, ping, `rmmod`/`modprobe`, power-off with the driver loaded (no
+hang), and uninstall leaving nothing behind. Suspend/resume and Secure Boot
+enrollment were not part of that run.
 
 ## Upstream Patch Integration
 
