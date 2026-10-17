@@ -72,7 +72,7 @@ again is harmless — it detects in-tree support and installs nothing.
 | | Status | Notes |
 |-|--------|-------|
 | WiFi (2.4 GHz) | Working | Stable on most hardware |
-| WiFi (5 GHz) | Working | Associates on 5 GHz (VHT, 40 MHz) in testing; band steering on dual-band SSIDs untested |
+| WiFi (5 GHz) | Working | Associates on 5 GHz (VHT, 40 MHz) on every tested kernel |
 | WiFi (6 GHz / 6E) | Untested | Kernel 5.4+ required for 6G support |
 | Bluetooth | Working | Patched `btusb` + `btmtk` modules |
 
@@ -274,18 +274,38 @@ Should work on other MT7902-based PCIe cards. Minimum kernel: 5.4.
 
 ## Tested on
 
-| System | Kernel | WiFi | Bluetooth |
-|--------|--------|------|-----------|
-| Arch Linux (x86_64) | 6.18.9-arch1-2 | ✅ Working | ✅ Working |
-| Ubuntu 24.04, `mt7902e` | 6.8.0-147-generic | ✅ 5 GHz, connect + ping | ✅ |
-| Ubuntu 24.04 HWE, `mt7902e` | 7.0.0-38-generic | ✅ 5 GHz, connect + ping | ✅ |
-| Ubuntu 24.04 HWE, `--mt76` | 7.0.0-38-generic | ✅ 5 GHz, connect + ping | ✅ |
+| System | Kernel | Driver | WiFi | Bluetooth |
+|--------|--------|--------|------|-----------|
+| Ubuntu 24.04 | 6.8.0-147-generic | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
+| Ubuntu 24.04 HWE | 7.0.0-38-generic | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
+| Ubuntu 24.04 HWE, `--mt76` | 7.0.0-38-generic | `mt7921e_git` | ✅ 5 GHz, connect + ping | ✅ |
+| Fedora 43 | 6.17.1-300.fc43 | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
+| Fedora 43 | 7.2.11-100.fc43 | in-tree `mt7921e` | ✅ 5 GHz, connect + ping | ✅ in-tree |
+| Arch Linux (`linux-lts`) | 6.18.57-1-lts | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
+| Arch Linux | 7.2.10-arch1-1 | in-tree `mt7921e` | ✅ 5 GHz, connect + ping | ✅ in-tree |
+| Arch Linux (earlier report) | 6.18.9-arch1-2 | — | ✅ Working | ✅ Working |
 
-The three Ubuntu rows were run on an ASUS Vivobook (MT7902, Bluetooth
-`13d3:3579`) with the card passed through to a VM: install, reboot, scan,
-association, ping, `rmmod`/`modprobe`, power-off with the driver loaded (no
-hang), and uninstall leaving nothing behind. Suspend/resume and Secure Boot
-enrollment were not part of that run.
+All rows except the last were run on 17 Oct 2026 on an ASUS Vivobook (MT7902,
+Bluetooth `13d3:3579`), with the real card passed through to a VM of each
+distribution and no other network than the card itself. Each run covers:
+install, reboot, scan (2.4 + 5 GHz), association, ping, Bluetooth controller
+with firmware 20250826, `rmmod`/`modprobe`, power-off with the driver loaded
+(3–6 s, no hang), and an uninstall that leaves the distribution's modules and
+firmware in place. On 7.1+ the installer correctly installs nothing.
+
+Not covered yet: suspend/resume, Secure Boot key enrollment, other laptops.
+
+### Compared with the previous installer
+
+Same card, same VMs, same kernels:
+
+| | Previous installer | This version |
+|---|---|---|
+| Power-off on Ubuntu 6.8 | kernel oops in `mt7921_pci_shutdown`, machine hangs | clean, 4 s |
+| Bluetooth on Fedora | patched `btusb` never loads, MediaTek firmware not set up | patched module, firmware 20250826 |
+| Bluetooth firmware on Arch | 2022 build, hides the 2025 one from `linux-firmware` | 20250826 |
+| After uninstall | deletes the distribution's MT7902 firmware | distribution files untouched |
+| Without a network | falls back to `gen4-mt7902`, which hangs in probe | builds from the bundled source |
 
 ## Upstream Patch Integration
 
