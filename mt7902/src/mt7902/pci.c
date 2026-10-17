@@ -350,9 +350,17 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 
 	pci_set_drvdata(pdev, mdev);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
 	regs =  pcim_iomap_region(pdev, 0, pci_name(pdev));
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
+#else
+	/* pcim_iomap_region() only exists from 6.12 on */
+	ret = pcim_iomap_regions(pdev, BIT(0), pci_name(pdev));
+	if (ret)
+		return ret;
+	regs = pcim_iomap_table(pdev)[0];
+#endif
 
 	dev = container_of(mdev, struct mt792x_dev, mt76);
 	dev->fw_features = features;
