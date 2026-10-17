@@ -4,12 +4,14 @@
 # Builds and installs WiFi + Bluetooth drivers and firmware for the
 # MediaTek MT7902 PCIe wireless card.
 #
-# Usage: sudo ./install.sh [--all|--wifi|--bt] [--no-dkms]
+# Usage: sudo ./install.sh [--all|--wifi|--bt] [--no-dkms] [--help]
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+. "${SCRIPT_DIR}/lib.sh"
 KVER=$(uname -r)
 KMAJOR=$(echo "$KVER" | cut -d. -f1)
 KMINOR=$(echo "$KVER" | cut -d. -f2)
@@ -17,14 +19,16 @@ KMINOR=$(echo "$KVER" | cut -d. -f2)
 DO_WIFI=false
 DO_BT=false
 USE_DKMS=true
-USE_FALLBACK=false
 FORCE_CUSTOM=false
-PREFER_GEN4=false
+# Which WiFi driver to try first: mt7902e (default), mt76 or gen4
+PREFER_DRIVER="mt7902e"
 DO_KERNEL_UPGRADE=false
 SKIP_CARD_CHECK=false
-FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
-FALLBACK_DIR="/tmp/mt7902-fallback"
+NO_REBOOT=false
+CLEAN_FIRMWARE=false
+REPO_URL="https://github.com/abdullaabdullazade/mt7902_driver"
 WIFI_DRIVER_USED=""
+LAST_MODPROBE_ERR=""
 
 # ── colors ────────────────────────────────────────────────────
 NC='\033[0m'
@@ -107,12 +111,21 @@ usage() {
     --all         Install both WiFi and Bluetooth drivers (default)
     --wifi        Install WiFi driver only
     --bt          Install Bluetooth driver only
-    --no-dkms     Build WiFi driver manually instead of using DKMS
-    --fallback    Skip gen4 driver, use hmtheboy154/mt7902 directly
+    --no-dkms     Build the drivers manually instead of using DKMS
+                  (they then stop working after the next kernel update)
+    --mt7902e     Use the mt7902e driver first. This is the default.
+    --fallback    Same as --mt7902e (kept for older instructions)
+    --mt76        Try the mt76 driver first: mainline mt76 at kernel 7.3 level,
+                  with every MT7902 fix merged since 7.1 (kernel 6.12 - 7.0).
+                  Replaces all in-kernel mt76 drivers with its own copies.
+    --gen4        Try the bundled gen4-mt7902 vendor driver first
     --force-custom Build a custom driver even if the kernel already
                   supports 14c3:7902 in the in-tree mt7921e driver
-    --gen4        Try the bundled gen4-mt7902 vendor driver before the
-                  mt76-based one (default order is the other way round)
+    --clean-firmware
+                  Remove stale MT7902 firmware copies left by older versions
+                  of this installer that hide the newer firmware your
+                  distribution ships (only files no package owns)
+    --no-reboot   Do not reboot at the end
     --upgrade-kernel
                   Offer to move to a kernel that supports this card in-tree
                   (7.1+). Fedora installs its own signed kernel alongside the
@@ -126,15 +139,12 @@ usage() {
     sudo $0               # install everything (auto-selects best driver)
     sudo $0 --wifi        # wifi driver + firmware only
     sudo $0 --bt          # bluetooth driver + firmware only
-    sudo $0 --fallback    # use hmtheboy154/mt7902 driver directly
+    sudo $0 --mt76        # prefer the newer mt76 driver
 EOF
     exit 0
 }
 
 # parse args — default is --all
-if [ $# -eq 0 ]; then
-    DO_WIFI=true; DO_BT=true
-fi
 
 for arg in "$@"; do
     case $arg in
@@ -142,15 +152,25 @@ for arg in "$@"; do
         --wifi)     DO_WIFI=true ;;
         --bt)       DO_BT=true ;;
         --no-dkms)  USE_DKMS=false ;;
-        --fallback) USE_FALLBACK=true ;;
+        --fallback|--mt7902e) PREFER_DRIVER="mt7902e" ;;
+        --mt76)     PREFER_DRIVER="mt76" ;;
+        --gen4)     PREFER_DRIVER="gen4" ;;
         --force-custom) FORCE_CUSTOM=true ;;
-        --gen4)     PREFER_GEN4=true ;;
+        --clean-firmware) CLEAN_FIRMWARE=true ;;
+        --no-reboot) NO_REBOOT=true ;;
         --upgrade-kernel) DO_KERNEL_UPGRADE=true ;;
         --no-card-check) SKIP_CARD_CHECK=true ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $arg"; usage ;;
     esac
 done
+# Options that only change *how* (--mt76, --no-dkms, --no-reboot, ...) must
+# not change *what*: with neither --wifi nor --bt, install both. This used to
+# key off "no arguments at all", so e.g. `install.sh --fallback` installed
+# nothing and still printed "Installation complete".
+if [ "$DO_WIFI" = false ] && [ "$DO_BT" = false ]; then
+    DO_WIFI=true; DO_BT=true
+fi
 
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}✗ Run this script with sudo${NC}"
@@ -158,29 +178,72 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ── distro detection ──────────────────────────────────────────
+# Derivatives (CachyOS, Nobara, Kali, KDE neon, ...) are matched through
+# ID_LIKE, so they get their parent's package commands instead of "unknown".
 DISTRO="unknown"
 detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        case "$ID" in
-            ubuntu|debian|linuxmint|pop|elementary|zorin) DISTRO="debian" ;;
-            fedora|rhel|centos|rocky|alma)                DISTRO="fedora" ;;
-            arch|manjaro|endeavouros|garuda)               DISTRO="arch" ;;
-            opensuse*|sles)                                DISTRO="suse" ;;
+    [ -f /etc/os-release ] || return 0
+    local ID="" ID_LIKE="" id
+    . /etc/os-release
+    for id in $ID $ID_LIKE; do
+        case "$id" in
+            ubuntu|debian|linuxmint|pop|elementary|zorin|kali|neon|raspbian)
+                DISTRO="debian"; return 0 ;;
+            fedora|rhel|centos|rocky|almalinux|alma|nobara|ultramarine)
+                DISTRO="fedora"; return 0 ;;
+            arch|manjaro|endeavouros|garuda|cachyos|artix)
+                DISTRO="arch"; return 0 ;;
+            opensuse*|suse|sles)
+                DISTRO="suse"; return 0 ;;
         esac
-    fi
+    done
+}
+
+kernel_built_with_clang() {
+    grep -qs '^CONFIG_CC_IS_CLANG=y' "/lib/modules/${KVER}/build/.config"
+}
+
+# The headers have to match the running kernel exactly. A bare "kernel-devel"
+# or "linux-headers" installs the headers for the newest kernel in the
+# repositories, which is not the one running until the next reboot, and the
+# build then fails with "no kernel headers".
+headers_package() {
+    case "$DISTRO" in
+        debian) echo "linux-headers-${KVER}" ;;
+        fedora) echo "kernel-devel-${KVER}" ;;
+        arch)   # linux, linux-lts, linux-zen, linux-cachyos, ... each have their own
+                local base=""
+                [ -r "/usr/lib/modules/${KVER}/pkgbase" ] && read -r base < "/usr/lib/modules/${KVER}/pkgbase"
+                echo "${base:-linux}-headers" ;;
+        suse)   local flavor="${KVER##*-}"
+                echo "kernel-${flavor:-default}-devel" ;;
+    esac
 }
 
 install_deps() {
     step "Installing build dependencies"
-    local rc=0
+    local rc=0 hdr extra=""
+    hdr=$(headers_package)
+    # Clang-built kernels need their modules built with clang as well
+    kernel_built_with_clang && extra="clang lld llvm"
     case "$DISTRO" in
         debian) apt-get update -qq >/dev/null 2>&1
-                apt-get install -y build-essential linux-headers-$(uname -r) dkms zstd git > /dev/null 2>&1 || rc=$? ;;
-        fedora) dnf install -y make gcc kernel-devel kernel-headers dkms zstd git > /dev/null 2>&1 || rc=$? ;;
-        arch)   pacman -S --needed --noconfirm base-devel linux-headers dkms zstd git > /dev/null 2>&1 || rc=$? ;;
-        suse)   zypper install -y make gcc kernel-devel dkms zstd git > /dev/null 2>&1 || rc=$? ;;
-        *)      warn "Unknown distro — install manually: build-essential, linux-headers, dkms, zstd, git"; return 0 ;;
+                apt-get install -y build-essential "$hdr" dkms zstd git iw $extra > /dev/null 2>&1 || rc=$? ;;
+        fedora) dnf install -y make gcc "$hdr" dkms zstd git iw $extra > /dev/null 2>&1 || rc=$? ;;
+        arch)   pacman -S --needed --noconfirm base-devel "$hdr" dkms zstd git iw $extra > /dev/null 2>&1 || rc=$? ;;
+        suse)   zypper --non-interactive install make gcc "$hdr" dkms zstd git iw $extra > /dev/null 2>&1 || rc=$? ;;
+        *)      warn "Unknown distro — install manually: compiler, make, kernel headers for ${KVER}, dkms, zstd, git, iw"
+                [ -d "/lib/modules/${KVER}/build" ] || warn "No kernel headers found at /lib/modules/${KVER}/build"
+                return 0 ;;
+    esac
+
+    # The drivers here are built against the kernel's own cfg80211/mac80211
+    # and bluetooth. Minimal installs (cloud images, Fedora with only
+    # kernel-modules-core) do not have them; try to add them, separately, so
+    # a package that does not exist for this kernel cannot fail the rest.
+    case "$DISTRO" in
+        debian) apt-get install -y "linux-modules-extra-${KVER}" > /dev/null 2>&1 || true ;;
+        fedora) dnf install -y "kernel-modules-${KVER}" > /dev/null 2>&1 || true ;;
     esac
 
     if [ "$rc" -ne 0 ]; then
@@ -193,11 +256,11 @@ install_deps() {
             ok "Kernel headers for ${KVER} are present, continuing"
         else
             warn "No kernel headers found at /lib/modules/${KVER}/build"
-            warn "If a build fails below, install the headers for your kernel first"
+            warn "Install ${hdr} (or your kernel's headers) and run this again"
         fi
         return 0
     fi
-    ok "Dependencies ready (${DISTRO})"
+    ok "Dependencies ready (${DISTRO}, headers: ${hdr})"
 }
 
 # ── optional kernel upgrade ───────────────────────────────────
@@ -540,10 +603,11 @@ install_firmware() {
 
     mkdir -p "$dstdir"
 
-    # linux-firmware has shipped MT7902 firmware since its 20260309 release.
-    # If the distribution already provides a non-empty copy, that one is
-    # authoritative — do not overwrite it with the bundle in this repo.
-    if [ -s "${dstdir}/${base}" ]; then
+    # linux-firmware has shipped MT7902 firmware since its 20260309 release,
+    # usually compressed (.zst on Ubuntu/Arch, .xz on Fedora). Any variant
+    # already present satisfies the driver, and that copy is authoritative:
+    # an uncompressed copy from here would be loaded first and hide it.
+    if fw_any_variant "${dstdir}/${base}"; then
         return 0
     fi
 
@@ -562,13 +626,25 @@ install_firmware() {
     fi
 
     mv -f "$tmp" "${dstdir}/${base}"
+    record_installed "${dstdir}/${base}"
+}
+
+# WiFi + BT firmware for the mt76-based drivers, identical to linux-firmware's.
+install_mt7902_firmware() {
+    local kind="$1" f failed=0
+    for f in "${SCRIPT_DIR}/firmware/"${kind}_*MT7902*.bin; do
+        [ -f "$f" ] || continue
+        install_firmware "$f" "${FW_DIR}/mediatek" || failed=1
+    done
+    verify_firmware "${FW_DIR}/mediatek" || return 1
+    [ "$failed" -eq 0 ]
 }
 
 # Catch stubs left behind by earlier runs (or by anything else) before a
 # driver trips over them.
 verify_firmware() {
     local dir="$1" empty
-    empty=$(find "$dir" -maxdepth 2 -name 'mt7902*' -o -maxdepth 2 -name 'WIFI_*MT7902*' 2>/dev/null | while read -r f; do
+    empty=$(find "$dir" -maxdepth 2 \( -name 'mt7902*' -o -name '*MT7902*' \) 2>/dev/null | while read -r f; do
         [ -f "$f" ] && [ ! -s "$f" ] && echo "$f"
     done)
     if [ -n "$empty" ]; then
@@ -578,6 +654,31 @@ verify_firmware() {
         return 1
     fi
     return 0
+}
+
+# Older versions of this installer copied uncompressed firmware even when the
+# distribution already shipped it. The kernel loads the uncompressed file
+# first, so those copies hide every later linux-firmware update — on one test
+# machine Bluetooth was running a 2022 build while the package had a 2025 one.
+# Point them out every run; remove them only when asked, because the machine
+# may be working fine as it is.
+check_shadowing_firmware() {
+    local stale f
+    stale=$(find_shadowing_firmware)
+    [ -n "$stale" ] || return 0
+    step "Checking for stale firmware copies"
+    if [ "$CLEAN_FIRMWARE" = true ]; then
+        echo "$stale" | while read -r f; do
+            rm -f "$f" && ok "Removed ${f}"
+        done
+        ok "Your distribution's firmware is used from now on (takes effect after reboot)"
+        return 0
+    fi
+    warn "These files are not from any package and hide newer firmware your"
+    warn "distribution ships for the same chip:"
+    echo "$stale" | while read -r f; do echo -e "        ${DIM}${f}${NC}"; done
+    warn "To use the distribution's firmware instead, run:"
+    echo -e "        ${CYAN}sudo ./install.sh --clean-firmware${NC} ${DIM}(add the options you normally use)${NC}"
 }
 
 # ── in-tree support probe ─────────────────────────────────────
@@ -688,14 +789,47 @@ EOF
 # ── guarded module load ───────────────────────────────────────
 # A bad mt7902 build can wedge the kernel thread in probe and never
 # return. Bounded so the installer keeps control and can fall back.
+# The error text is kept for explain_load_failure.
 try_modprobe() {
-    timeout 60 modprobe "$@" 2>/dev/null
-    local rc=$?
+    local rc
+    LAST_MODPROBE_ERR=$(timeout 60 modprobe "$@" 2>&1 >/dev/null)
+    rc=$?
     if [ "$rc" -eq 124 ]; then
         warn "modprobe $* timed out after 60s (driver hung in probe)"
         return 1
     fi
     return $rc
+}
+
+# The usual reason a freshly built module will not load is Secure Boot:
+# DKMS signs it, but with a key the firmware does not trust yet.
+explain_load_failure() {
+    [ -n "$LAST_MODPROBE_ERR" ] && echo -e "        ${DIM}${LAST_MODPROBE_ERR}${NC}"
+    if echo "$LAST_MODPROBE_ERR" | grep -qiE 'key was rejected|required key not available'; then
+        local cert=""
+        for cert in /var/lib/shim-signed/mok/MOK.der /var/lib/dkms/mok.pub; do
+            [ -f "$cert" ] && break
+            cert=""
+        done
+        warn "Secure Boot is on: the module is signed with a key your firmware"
+        warn "does not trust yet. Enroll it once, then reboot and choose"
+        warn "\"Enroll MOK\" in the blue screen that appears:"
+        echo -e "        ${CYAN}sudo mokutil --import ${cert:-/var/lib/dkms/mok.pub}${NC}"
+    fi
+}
+
+# After a driver is loaded: is the card bound to it and is there a wireless
+# interface? Firmware download takes a few seconds, so poll rather than sleep.
+wifi_up() {
+    local want="$1" i
+    for i in $(seq 1 20); do
+        if [ "$(mt7902_bound_driver)" = "$want" ] && wireless_iface_present; then
+            return 0
+        fi
+        sleep 1
+    done
+    # When the card is absent (--no-card-check) there is nothing to bind to
+    mt7902_pci_dev >/dev/null || lsmod | grep -q "^${want} "
 }
 
 # ── wifi health check ─────────────────────────────────────────
@@ -782,163 +916,285 @@ cleanup_gen4() {
     ok "gen4-mt7902 fully removed"
 }
 
-# ── fallback wifi driver (hmtheboy154/mt7902) ─────────────────
-install_wifi_fallback() {
-    echo ""
-    echo -e "  ${YELLOW}━━━ Switching to alternative driver (hmtheboy154/mt7902) ━━━${NC}"
-    echo ""
-
-    # Only clean up gen4 if it is actually on the system. This path now also
-    # runs as the *first* choice, where there is nothing to remove and the
-    # cleanup output would be misleading.
-    if [ "$GEN4_STAGED" = true ] || dkms status gen4-mt7902 2>/dev/null | grep -q gen4-mt7902 ||
-       [ -e "/lib/modules/${KVER}/updates/dkms/mt7902.ko" ] ||
-       [ -e "/lib/modules/${KVER}/updates/dkms/mt7902.ko.zst" ]; then
-        cleanup_gen4
-    fi
-
-    step "Cloning hmtheboy154/mt7902"
-    # git refuses to run if the current directory has been removed underneath us
-    cd "$SCRIPT_DIR" 2>/dev/null || cd /tmp
-    rm -rf "$FALLBACK_DIR"
-    if ! git clone --depth 1 "$FALLBACK_REPO" "$FALLBACK_DIR" 2>&1; then
-        fail "Could not clone ${FALLBACK_REPO}"
-        fail "Check your internet connection and try again."
-        return 1
-    fi
-    ok "Repository cloned to ${FALLBACK_DIR}"
-
-    step "Building alternative WiFi driver"
-    cd "$FALLBACK_DIR"
-    make -j$(nproc)
-    sudo make install -j$(nproc)
-    ok "Alternative driver built and installed"
-
-    step "Installing firmware (hmtheboy154/mt7902)"
-    make install_fw 2>/dev/null || warn "Firmware install step skipped (may already be present)"
-    ok "Firmware installed"
-
-    cd "$SCRIPT_DIR"
-
-    step "Loading alternative WiFi module"
-    depmod -a
-    rmmod mt7902e 2>/dev/null || true
-    rmmod mt7921e 2>/dev/null || true
-    rmmod mt7921_common 2>/dev/null || true
-    rmmod mt76_connac_lib 2>/dev/null || true
-    if ! try_modprobe mt7902e; then
-        fail "Could not load alternative driver either."
-        WIFI_DRIVER_USED="none (both drivers failed)"
-        return 1
-    fi
-    ok "Alternative driver loaded (mt7902e by hmtheboy154)"
-
-    WIFI_DRIVER_USED="hmtheboy154/mt7902"
+# ── DKMS helpers ──────────────────────────────────────────────
+show_build_log() {
+    local name="$1" ver="$2" log="$3" f
+    for f in "/var/lib/dkms/${name}/${ver}/build/make.log" \
+             "/var/lib/dkms/${name}/${ver}/${KVER}/$(uname -m)/log/make.log" "$log"; do
+        if [ -s "$f" ]; then
+            echo -e "        ${DIM}── last lines of ${f} ──${NC}"
+            grep -E 'error|Error|undefined' "$f" | tail -8 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+            break
+        fi
+    done
+    [ -s "$log" ] && cp -f "$log" "${STATE_DIR}/" 2>/dev/null
+    echo -e "        ${DIM}Full log: ${STATE_DIR}/$(basename "$log")${NC}"
 }
 
-# ── wifi ──────────────────────────────────────────────────────
-install_wifi() {
+# Copy a source tree to /usr/src/<name>-<ver> and add, build and install it
+# for the running kernel. Under `set -e` a failing command inside a function
+# called from `if`/`||` does NOT stop the function, so every step is checked
+# explicitly — earlier versions reported "registered" after a failed build.
+dkms_install_pkg() {
+    local name="$1" ver="$2" src="$3"
+    local log="${STATE_DIR}/${name}-build.log"
+    mkdir -p "$STATE_DIR"
+    dkms remove -m "$name" -v "$ver" --all >/dev/null 2>&1 || true
+    rm -rf "/usr/src/${name}-${ver}"
+    mkdir -p "/usr/src/${name}-${ver}"
+    cp -r "$src"/. "/usr/src/${name}-${ver}/"
+    : > "$log"
+    if ! dkms add -m "$name" -v "$ver" >>"$log" 2>&1 ||
+       ! dkms build -m "$name" -v "$ver" -k "$KVER" >>"$log" 2>&1 ||
+       ! dkms install -m "$name" -v "$ver" -k "$KVER" --force >>"$log" 2>&1; then
+        fail "Building ${name} for ${KVER} failed"
+        show_build_log "$name" "$ver" "$log"
+        dkms remove -m "$name" -v "$ver" --all >/dev/null 2>&1 || true
+        rm -rf "/usr/src/${name}-${ver}"
+        return 1
+    fi
+    ok "${name} built and registered with DKMS (rebuilt automatically on kernel updates)"
+}
+
+# Without DKMS: build in place and drop the modules under updates/, which
+# depmod prefers over the kernel's own tree. Nothing of the kernel's is touched.
+manual_install_pkg() {
+    local name="$1" src="$2"; shift 2
+    local log="${STATE_DIR}/${name}-build.log" llvm="" m dst="/lib/modules/${KVER}/updates/${name}"
+    mkdir -p "$STATE_DIR"
+    command -v make >/dev/null 2>&1 || { fail "make is not installed — cannot build ${name}"; return 1; }
+    [ -d "/lib/modules/${KVER}/build" ] || { fail "No kernel headers at /lib/modules/${KVER}/build"; return 1; }
+    kernel_built_with_clang && llvm="LLVM=1"
+    if ! make -C "$src" KVER="$KVER" $llvm > "$log" 2>&1; then
+        fail "Building ${name} failed"
+        show_build_log "$name" none "$log"
+        return 1
+    fi
+    mkdir -p "$dst"
+    for m in "$@"; do
+        install -m 644 "${src}/${m}.ko" "${dst}/${m}.ko" || return 1
+        record_installed "${dst}/${m}.ko"
+    done
+    depmod -a "$KVER"
+    ok "${name} built and installed to ${dst} (rebuild it after a kernel update)"
+    warn "Without DKMS this driver stops working after the next kernel update"
+}
+
+# Kernel log lines printed since a mark, to judge a driver by what it said
+# rather than only by whether modprobe returned 0 (issue #2: mt7902e loads,
+# then every MCU message times out and scanning never works).
+dmesg_mark() { dmesg 2>/dev/null | wc -l; }
+dmesg_since() { dmesg 2>/dev/null | tail -n +"$(( $1 + 1 ))"; }
+
+wifi_errors_since() {
+    dmesg_since "$1" | grep -iE "$2" |
+        grep -iE 'timeout|timed out|hardware init failed|failed to|error -|probe .*failed' || true
+}
+
+# Two drivers bound to one card race each other at every boot; take every
+# other driver from this repository away before installing one.
+remove_other_wifi_drivers() {
+    local keep="$1"
+    [ "$keep" != "gen4" ] && { [ "$GEN4_STAGED" = true ] || dkms_has gen4-mt7902 ||
+        ls /lib/modules/"${KVER}"/updates/dkms/mt7902.ko* >/dev/null 2>&1; } && cleanup_gen4
+    [ "$keep" != "mt7902e" ] && remove_mt7902e
+    [ "$keep" != "mt76" ] && remove_mt76 "${SCRIPT_DIR}/mt76"
+    return 0
+}
+
+unload_stock_mt76() {
+    local m
+    for m in mt7921e mt7921_common mt792x_lib mt76_connac_lib mt76; do
+        rmmod "$m" 2>/dev/null || true
+    done
+}
+
+# ── WiFi driver: hmtheboy154/mt7902 (mt7902e) ─────────────────
+# Mainline mt76 plus MediaTek's MT7902 series (Feb 2026), for 6.6 - 7.0. The
+# upstream repository is archived; the copy in mt7902/ is its final state, so
+# no network is needed — usually there is none, since WiFi is what is missing.
+write_mt7902e_dkms_conf() {
+    cat > "$1/dkms.conf" <<EOF
+PACKAGE_NAME="mt7902e"
+PACKAGE_VERSION="${MT7902E_DKMS_VER}"
+BUILD_EXCLUSIVE_KERNEL="^(6\\.([6-9]|1[0-9])|7\\.)"
+MAKE[0]="make KVER=\${kernelver} \$(grep -qs '^CONFIG_CC_IS_CLANG=y' /lib/modules/\${kernelver}/build/.config && echo LLVM=1)"
+BUILT_MODULE_NAME[0]="mt7902e"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+AUTOINSTALL="yes"
+EOF
+}
+
+install_wifi_mt7902e() {
+    local src="${SCRIPT_DIR}/mt7902" stage="${STATE_DIR}/mt7902e-src" mark errs
+
+    echo ""
+    echo -e "  ${WHITE}Driver: mt7902e${NC}"
+
+    if [ ! -f "${src}/Makefile" ]; then
+        fail "mt7902/ is missing from this checkout — clone ${REPO_URL} again"
+        return 1
+    fi
+
+    remove_other_wifi_drivers mt7902e
+
+    step "Installing WiFi firmware"
+    install_mt7902_firmware WIFI || return 1
+    ok "Firmware in place"
+
+    step "Building mt7902e"
+    mkdir -p "$STATE_DIR"
+    rm -rf "$stage"
+    cp -r "$src" "$stage"
+    write_mt7902e_dkms_conf "$stage"
+    if [ "$USE_DKMS" = true ] && command -v dkms >/dev/null 2>&1; then
+        dkms_install_pkg mt7902e "$MT7902E_DKMS_VER" "$stage" || return 1
+    else
+        manual_install_pkg mt7902e "$stage" mt7902e || return 1
+    fi
+
+    # Only with --force-custom on 7.1+: the in-tree driver would win otherwise
+    if intree_supports_mt7902; then
+        echo "blacklist mt7921e" > /etc/modprobe.d/mt7902-blacklist-intree.conf
+    fi
+
+    step "Loading mt7902e"
+    unload_stock_mt76
+    rmmod mt7902e 2>/dev/null || true
+    mark=$(dmesg_mark)
+    if ! try_modprobe mt7902e; then
+        fail "mt7902e did not load"
+        explain_load_failure
+        if echo "$LAST_MODPROBE_ERR" | grep -qiE 'key was rejected|required key not available'; then
+            # Not broken: it loads once the signing key is enrolled. Keep it.
+            WIFI_DRIVER_USED="mt7902e (waiting for Secure Boot key enrollment)"
+            return 0
+        fi
+        remove_mt7902e
+        return 1
+    fi
+    if ! wifi_up mt7902e; then
+        fail "mt7902e loaded but the card did not come up"
+        dmesg_since "$mark" | grep -i mt79 | tail -5 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+        remove_mt7902e
+        return 1
+    fi
+    sleep 5
+    errs=$(wifi_errors_since "$mark" 'mt79')
+    if [ -n "$errs" ]; then
+        fail "mt7902e is up but the firmware is not answering:"
+        echo "$errs" | head -4 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+        remove_mt7902e
+        return 1
+    fi
+    if mt7902_pci_dev >/dev/null; then
+        ok "mt7902e loaded, card bound, wireless interface present"
+    else
+        ok "mt7902e loaded (no card on this machine to bind — --no-card-check)"
+    fi
+    WIFI_DRIVER_USED="mt7902e"
+}
+
+# ── WiFi driver: morrownr/mt76 ────────────────────────────────
+# The whole mainline mt76 family at kernel 7.3 level, built as *_git modules
+# next to the in-kernel ones (which its modprobe.d file blacklists). It carries
+# every MT7902 fix merged since 7.1. Supported on 6.12 and newer only.
+mt76_supports_kernel() {
+    [ "$KMAJOR" -ge 7 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 12 ]; }
+}
+
+install_wifi_mt76() {
+    local src="${SCRIPT_DIR}/mt76" log="${STATE_DIR}/mt76-install.log" mark errs
+
+    echo ""
+    echo -e "  ${WHITE}Driver: mt76 (mt7921e_git)${NC}"
+    [ -f "${src}/install-driver.sh" ] || { fail "mt76/ is missing from this checkout"; return 1; }
+
+    remove_other_wifi_drivers mt76
+
+    step "Installing WiFi firmware"
+    install_mt7902_firmware WIFI || return 1
+    ok "Firmware in place"
+
+    step "Building mt76 — takes a few minutes"
+    mkdir -p "$STATE_DIR"
+    unload_stock_mt76
+    if ! ( cd "$src" && sh install-driver.sh NoPrompt NoFirmware ) > "$log" 2>&1 </dev/null; then
+        fail "mt76 install failed"
+        grep -vE '^\s*$' "$log" | tail -8 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+        echo -e "        ${DIM}Full log: ${log}${NC}"
+        remove_mt76 "$src"
+        return 1
+    fi
+    ok "Built and installed (log: ${log})"
+
+    step "Loading mt7921e_git"
+    mark=$(dmesg_mark)
+    if ! try_modprobe mt7921e_git; then
+        fail "mt7921e_git did not load"
+        explain_load_failure
+        if echo "$LAST_MODPROBE_ERR" | grep -qiE 'key was rejected|required key not available'; then
+            WIFI_DRIVER_USED="mt76 (waiting for Secure Boot key enrollment)"
+            return 0
+        fi
+        remove_mt76 "$src"
+        return 1
+    fi
+    if ! wifi_up mt7921e_git; then
+        fail "mt7921e_git loaded but the card did not come up"
+        dmesg_since "$mark" | grep -i mt79 | tail -5 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+        remove_mt76 "$src"
+        return 1
+    fi
+    sleep 5
+    errs=$(wifi_errors_since "$mark" 'mt79')
+    if [ -n "$errs" ]; then
+        fail "mt7921e_git is up but the firmware is not answering:"
+        echo "$errs" | head -4 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
+        remove_mt76 "$src"
+        return 1
+    fi
+    if mt7902_pci_dev >/dev/null; then
+        ok "mt7921e_git loaded, card bound, wireless interface present"
+    else
+        ok "mt7921e_git loaded (no card on this machine to bind — --no-card-check)"
+    fi
+    WIFI_DRIVER_USED="mt76 (mt7921e_git)"
+}
+
+# ── WiFi driver: bundled gen4-mt7902 (vendor) ─────────────────
+# Last resort: it frequently fails MCU init on this card ("wlanAccessRegister:
+# Event reports address incorrect", "Fail reason: 4") and can hang in probe,
+# hence the boot-safety measures below.
+install_wifi_gen4() {
     local src="${SCRIPT_DIR}/gen4-mt7902"
 
-    # detect firmware path (Arch uses /usr/lib/firmware, others use /lib/firmware)
-    local FW_DIR="/lib/firmware"
-    [ -d "/usr/lib/firmware" ] && ! [ -L "/lib" ] && FW_DIR="/usr/lib/firmware"
-
-    # ── prefer the in-tree driver when the kernel has 7902 support ──
-    if [ "$FORCE_CUSTOM" = false ] && [ "$USE_FALLBACK" = false ] && intree_supports_mt7902; then
-        use_intree_driver && return 0
-    fi
-
-    # ── if --fallback flag used, skip gen4 entirely ────────────
-    if [ "$USE_FALLBACK" = true ]; then
-        step "Skipping gen4 driver (--fallback flag set)"
-        install_wifi_fallback || return 1
-        return 0
-    fi
-
-    # ── on kernels without in-tree support, try the mt76-based driver first ──
-    # gen4-mt7902 is a vendor tree that repeatedly fails MCU init on this
-    # hardware ("wlanAccessRegister: Event reports address incorrect",
-    # "Fail reason: 4"), which is what the mcu_bypass/disable_rpm options in
-    # this repo exist to work around. hmtheboy154/mt7902 is built on mt76 —
-    # the same lineage upstream ended up merging — so it is the better first
-    # choice. gen4 is still attempted if it fails. Use --gen4 to invert this.
-    if [ "$PREFER_GEN4" = false ]; then
-        if backport_supports_kernel; then
-            step "Trying the mt76-based driver first (gen4 is the fallback)"
-            if install_wifi_fallback; then
-                return 0
-            fi
-            warn "mt76-based driver did not work; trying gen4-mt7902"
-        else
-            warn_unsupported_kernel
-            warn "Skipping the mt76 backport (needs kernel 6.6 or newer)"
-        fi
-    fi
-
+    echo ""
+    echo -e "  ${WHITE}Driver: gen4-mt7902 (vendor, last resort)${NC}"
     [ -d "$src" ] || { fail "WiFi source not found: $src"; return 1; }
 
+    remove_other_wifi_drivers gen4
+
     step "Building WiFi driver (gen4-mt7902)"
-
-    if [ "$USE_DKMS" = true ]; then
-        dkms status gen4-mt7902 2>/dev/null | grep -q "gen4-mt7902" && \
-            dkms remove gen4-mt7902/0.1 --all 2>/dev/null || true
-
-        mkdir -p /usr/src/gen4-mt7902-0.1
-        cp -r "$src"/* /usr/src/gen4-mt7902-0.1/
-        dkms add -m gen4-mt7902 -v 0.1 > /dev/null 2>&1
-        dkms build -m gen4-mt7902 -v 0.1
-        dkms install -m gen4-mt7902 -v 0.1
-        ok "DKMS module registered (auto-rebuild on kernel updates)"
+    if [ "$USE_DKMS" = true ] && command -v dkms >/dev/null 2>&1; then
+        rm -rf /usr/src/gen4-mt7902-0.1
+        dkms_install_pkg gen4-mt7902 0.1 "$src" || return 1
     else
-        # `make -j$(nproc)` under `set -e` still lets the script continue when
-        # make itself is missing, so this used to report a successful build on
-        # a machine with no toolchain at all.
-        if ! command -v make >/dev/null 2>&1; then
-            fail "make is not installed — cannot build the driver"
-            fail "Install your distribution's kernel build tools and try again."
-            return 1
-        fi
-        if [ ! -d "/lib/modules/${KVER}/build" ]; then
-            fail "No kernel headers at /lib/modules/${KVER}/build — cannot build"
-            return 1
-        fi
-        cd "$src"
-        if ! make -j"$(nproc)"; then
-            cd "$SCRIPT_DIR"
-            fail "Driver build failed"
-            return 1
-        fi
-        if ! make install -j"$(nproc)"; then
-            cd "$SCRIPT_DIR"
-            fail "Driver install failed"
-            return 1
-        fi
-        cd "$SCRIPT_DIR"
-        ok "Module built and installed manually"
+        manual_install_pkg gen4-mt7902 "$src" mt7902 || return 1
     fi
 
     step "Installing WiFi firmware"
-    mkdir -p "${FW_DIR}/mediatek/mt7902"
-    local fw_failed=0
-    if [ -d "$src/firmware" ]; then
-        for f in "$src/firmware/"*; do
-            [ -f "$f" ] || continue
-            install_firmware "$f" "${FW_DIR}/mediatek/" || fw_failed=1
-        done
-    fi
-
-    local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
-    if [ -d "$fw" ]; then
-        for f in "$fw"/WIFI_*.bin.zst "$fw"/WIFI_*.bin; do
-            [ -f "$f" ] || continue
-            install_firmware "$f" "${FW_DIR}/mediatek/" || fw_failed=1
-        done
-        for f in "$fw"/mt7902_*.bin.zst "$fw"/mt7902_*.bin; do
-            [ -f "$f" ] || continue
-            install_firmware "$f" "${FW_DIR}/mediatek/mt7902/" || fw_failed=1
-        done
-    fi
+    local fw_failed=0 f
+    for f in "$src/firmware/"*; do
+        [ -f "$f" ] || continue
+        install_firmware "$f" "${FW_DIR}/mediatek" || fw_failed=1
+    done
+    # vendor-only files under mediatek/mt7902/ (uncompressed copies only:
+    # the kernel would pick the .bin anyway and the .zst is a duplicate)
+    for f in "${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"/mt7902_*.bin; do
+        [ -f "$f" ] || continue
+        install_firmware "$f" "${FW_DIR}/mediatek/mt7902" || fw_failed=1
+    done
     verify_firmware "${FW_DIR}/mediatek" || return 1
     if [ "$fw_failed" -ne 0 ]; then
         fail "Some firmware files could not be installed — the driver would fail"
@@ -968,29 +1224,25 @@ EOF
 
     step "Loading WiFi module"
     depmod -a
-    # unload any conflicting stock drivers first
-    rmmod mt7921e 2>/dev/null || true
+    unload_stock_mt76
     rmmod mt7902e 2>/dev/null || true
-    rmmod mt7921_common 2>/dev/null || true
-    rmmod mt76_connac_lib 2>/dev/null || true
     rmmod mt7902 2>/dev/null || true
 
-    # ── try loading gen4 driver + health check ────────────────
     local gen4_ok=false
     if try_modprobe mt7902; then
         step "Verifying gen4 driver health"
         if check_wifi_health; then
             ok "gen4-mt7902 loaded and WiFi interface is up"
             gen4_ok=true
-            WIFI_DRIVER_USED="gen4-mt7902 (abdullaabdullazade)"
+            WIFI_DRIVER_USED="gen4-mt7902"
         else
             warn "gen4-mt7902 loaded but health check failed"
         fi
     else
         warn "gen4-mt7902 failed to load"
+        explain_load_failure
     fi
 
-    # ── try MCU bypass if standard load had issues ────────────
     if [ "$gen4_ok" = false ]; then
         warn "Attempting MCU Bypass (Force Load)..."
         rmmod mt7902 2>/dev/null || true
@@ -1001,7 +1253,7 @@ EOF
                 echo "options mt7902 mcu_bypass=1" > /etc/modprobe.d/mt7902.conf
                 ok "Persisted MCU bypass options to /etc/modprobe.d/mt7902.conf"
                 gen4_ok=true
-                WIFI_DRIVER_USED="gen4-mt7902 (abdullaabdullazade) [mcu_bypass]"
+                WIFI_DRIVER_USED="gen4-mt7902 [mcu_bypass]"
             else
                 warn "MCU bypass also failed health check"
             fi
@@ -1010,13 +1262,10 @@ EOF
         fi
     fi
 
-    # ── fallback to hmtheboy154/mt7902 ────────────────────────
     if [ "$gen4_ok" = false ]; then
-        echo ""
-        warn "gen4-mt7902 driver is not working on this system."
-        echo -e "      ${YELLOW}Automatically falling back to hmtheboy154/mt7902...${NC}"
-        install_wifi_fallback || return 1
-        return 0
+        cleanup_gen4
+        GEN4_STAGED=false
+        return 1
     fi
 
     # driver is proven working — only now is it safe to take the stock
@@ -1033,17 +1282,94 @@ EOF
     fi
 }
 
+# ── kernel base modules ───────────────────────────────────────
+# Without cfg80211/mac80211 (WiFi) or bluetooth (BT) every driver here fails
+# to load with "Unknown symbol in module"; say what is actually missing.
+missing_modules() {
+    local m out=""
+    for m in "$@"; do
+        modinfo -k "$KVER" "$m" >/dev/null 2>&1 || out="$out $m"
+    done
+    echo "${out# }"
+}
+
+explain_missing_modules() {
+    fail "Your kernel's own modules are missing: $1"
+    fail "Every driver for this card is built on top of them, so none can load."
+    case "$DISTRO" in
+        fedora) echo -e "        ${CYAN}sudo dnf install kernel-modules-${KVER}${NC}" ;;
+        debian) echo -e "        ${CYAN}sudo apt install linux-modules-extra-${KVER}${NC}" ;;
+        arch)   echo -e "        ${CYAN}sudo pacman -S $(headers_package | sed 's/-headers$//')${NC} ${DIM}(reinstall the kernel)${NC}" ;;
+        *)      echo -e "        ${DIM}Install the full module package for kernel ${KVER}${NC}" ;;
+    esac
+    echo -e "        ${DIM}Then run this installer again.${NC}"
+}
+
+# ── wifi ──────────────────────────────────────────────────────
+# Order on a kernel without in-tree support:
+#   mt7902e (default) -> morrownr/mt76 -> gen4
+# mt7902e stays first because it is what this installer has always used and
+# what works for most people; mt76 is newer and carries the post-7.1 fixes,
+# so it is the next thing tried when mt7902e misbehaves (--mt76 tries it first).
+install_wifi() {
+    if [ "$FORCE_CUSTOM" = false ] && intree_supports_mt7902; then
+        use_intree_driver && return 0
+    fi
+
+    local order d missing
+    missing=$(missing_modules cfg80211 mac80211)
+    if [ -n "$missing" ]; then
+        explain_missing_modules "$missing"
+        WIFI_DRIVER_USED="none (kernel modules missing: ${missing})"
+        return 1
+    fi
+
+    case "$PREFER_DRIVER" in
+        mt76) order="mt76 mt7902e gen4" ;;
+        gen4) order="gen4 mt7902e mt76" ;;
+        *)    order="mt7902e mt76 gen4" ;;
+    esac
+    backport_supports_kernel || warn_unsupported_kernel
+
+    for d in $order; do
+        case "$d" in
+            mt7902e)
+                backport_supports_kernel || { warn "Skipping mt7902e (needs kernel 6.6 or newer)"; continue; }
+                install_wifi_mt7902e && return 0 ;;
+            mt76)
+                mt76_supports_kernel || { warn "Skipping mt76 (needs kernel 6.12 or newer)"; continue; }
+                install_wifi_mt76 && return 0 ;;
+            gen4)
+                install_wifi_gen4 && return 0 ;;
+        esac
+        warn "${d} did not work on this machine — trying the next driver"
+    done
+    WIFI_DRIVER_USED="none (every driver failed)"
+    return 1
+}
+
 # ── bluetooth ─────────────────────────────────────────────────
+# Patched btusb + btmtk (mt7902_temp/linux-X.Y) packaged for DKMS from
+# bluetooth-dkms/. Earlier versions overwrote the distribution's own modules,
+# so the next kernel update silently took Bluetooth away again and Fedora
+# ended up with two btusb copies (.ko.xz and .ko.zst) side by side.
+assemble_bt_package() {
+    local out="$1" d v
+    rm -rf "$out"
+    mkdir -p "$out/src"
+    cp -r "${SCRIPT_DIR}/bluetooth-dkms/." "$out/"
+    for d in "${SCRIPT_DIR}"/mt7902_temp/linux-*/drivers/bluetooth; do
+        [ -f "$d/btusb.c" ] || continue
+        v=$(basename "$(dirname "$(dirname "$d")")")
+        mkdir -p "$out/src/$v"
+        cp "$d"/btusb.c "$d"/btmtk.c "$d"/*.h "$out/src/$v/"
+    done
+}
+
 install_bt() {
-    local base="${SCRIPT_DIR}/mt7902_temp"
-    local tag="linux-${KMAJOR}.${KMINOR}"
-    local bt_dir=""
+    local pkg="${STATE_DIR}/mt7902-bt-src" i
 
-    # detect firmware path
-    local FW_DIR="/lib/firmware"
-    [ -d "/usr/lib/firmware" ] && ! [ -L "/lib" ] && FW_DIR="/usr/lib/firmware"
-
-    step "Locating Bluetooth source for kernel ${KVER}"
+    step "Bluetooth for kernel ${KVER}"
 
     # Kernel 7.1+ ships btusb/btmtk with MT7902 support. Building the older
     # sources bundled here against it would replace working modules with a
@@ -1059,140 +1385,63 @@ install_bt() {
         return 0
     fi
 
-    if [ -d "${base}/${tag}/drivers/bluetooth" ]; then
-        bt_dir="${base}/${tag}/drivers/bluetooth"
-        ok "Exact match: ${tag}"
-    else
-        warn "No exact match for ${tag}, selecting closest..."
-        local best=""
-        for d in "${base}"/linux-*/drivers/bluetooth; do
-            [ -d "$d" ] || continue
-            local v=$(echo "$d" | grep -oP 'linux-\K[0-9]+\.[0-9]+')
-            local maj=$(echo "$v" | cut -d. -f1)
-            local min=$(echo "$v" | cut -d. -f2)
-            if [ "$maj" -lt "$KMAJOR" ] || { [ "$maj" -eq "$KMAJOR" ] && [ "$min" -le "$KMINOR" ]; }; then
-                best="$d"
-            fi
-        done
-        if [ -z "$best" ]; then
-            # every bundled source is newer than the running kernel — build the
-            # oldest one and rely on the compat shims below
-            best=$(ls -d "${base}"/linux-*/drivers/bluetooth 2>/dev/null | sort -V | head -1)
-            [ -n "$best" ] && warn "Kernel ${KMAJOR}.${KMINOR} is older than every bundled source; using oldest with compat shims"
-        fi
-        [ -z "$best" ] && { fail "No bluetooth source found"; return 1; }
-        bt_dir="$best"
-        ok "Using $(basename $(dirname $(dirname $bt_dir)))"
+    local missing
+    missing=$(missing_modules bluetooth)
+    if [ -n "$missing" ]; then
+        explain_missing_modules "$missing"
+        return 1
     fi
 
-    # ── compat shims for kernels older than the bundled source ────
-    # <linux/unaligned.h> is the 6.12+ name; before that the same helpers
-    # live in <asm/unaligned.h>. Provide a shim header on the include path
-    # so the newer bluetooth source still compiles on older kernels.
-    local compat_inc=""
-    if [ "$KMAJOR" -lt 6 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -lt 12 ]; }; then
-        compat_inc="$(mktemp -d /tmp/mt7902-compat-XXXXXX)"
-        mkdir -p "${compat_inc}/linux"
-        cat > "${compat_inc}/linux/unaligned.h" <<'EOF'
-/* Compat shim: <linux/unaligned.h> only exists on 6.12+ */
-#ifndef _MT7902_COMPAT_LINUX_UNALIGNED_H
-#define _MT7902_COMPAT_LINUX_UNALIGNED_H
-#include <asm/unaligned.h>
-#endif
-EOF
-        ok "Compat shim enabled (linux/unaligned.h for kernel < 6.12)"
-    fi
+    # Put back whatever an earlier version of this installer overwrote
+    remove_bt_backport
+    depmod -a
 
-    step "Building btusb + btmtk modules"
-    cd "$bt_dir"
-    make -C /lib/modules/$(uname -r)/build/ M=$(pwd) \
-        ${compat_inc:+EXTRA_CFLAGS="-I${compat_inc}"} modules
-
-    # Install firmware before loading the modules — btmtk needs it present
-    # at modprobe time, not after. Doing this after modprobe (as before)
-    # meant a fresh install always failed firmware setup on first load.
     step "Installing Bluetooth firmware"
-    local fw="${SCRIPT_DIR}/mt7902_temp/mt7902_firmware"
-    if [ -d "$fw" ]; then
-        mkdir -p "${FW_DIR}/mediatek"
-        for f in "$fw"/BT_*.bin.zst "$fw"/BT_*.bin; do
-            [ -f "$f" ] && cp "$f" "${FW_DIR}/mediatek/"
-        done
-    fi
-    ok "BT firmware copied"
+    install_mt7902_firmware BT || return 1
+    ok "Firmware in place"
 
-    # Sign modules if Secure Boot is enabled, using whatever MOK key is
-    # already enrolled (e.g. the one DKMS generates for other out-of-tree
-    # drivers). Without this, modprobe fails with "Key was rejected by
-    # service" and gives no hint about why.
-    if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
-        step "Signing modules for Secure Boot"
-        local sign_file=""
-        for candidate in \
-            "/usr/src/linux-headers-$(uname -r)/scripts/sign-file" \
-            "/lib/modules/$(uname -r)/build/scripts/sign-file"; do
-            [ -x "$candidate" ] && { sign_file="$candidate"; break; }
-        done
-
-        local mok_key="" mok_cert=""
-        if [ -f "/var/lib/shim-signed/mok/MOK.priv" ] && [ -f "/var/lib/shim-signed/mok/MOK.der" ]; then
-            mok_key="/var/lib/shim-signed/mok/MOK.priv"
-            mok_cert="/var/lib/shim-signed/mok/MOK.der"
-        elif [ -f "/var/lib/dkms/mok.key" ] && [ -f "/var/lib/dkms/mok.pub" ]; then
-            mok_key="/var/lib/dkms/mok.key"
-            mok_cert="/var/lib/dkms/mok.pub"
-        fi
-
-        if [ -n "$sign_file" ] && [ -n "$mok_key" ]; then
-            "$sign_file" sha256 "$mok_key" "$mok_cert" btusb.ko
-            "$sign_file" sha256 "$mok_key" "$mok_cert" btmtk.ko
-            ok "Modules signed with enrolled MOK key (${mok_key})"
-        else
-            warn "Secure Boot is enabled but no enrolled MOK key was found."
-            warn "modprobe will likely fail with 'Key was rejected by service'."
-            warn "Either disable Secure Boot, or enroll a MOK key (installing any"
-            warn "DKMS driver will generate+enroll one) and re-run with --bt."
-        fi
-    fi
-
-    if command -v zstd &>/dev/null; then
-        zstd -f btusb.ko -o btusb.ko.zst 2>/dev/null
-        zstd -f btmtk.ko -o btmtk.ko.zst 2>/dev/null
-    fi
-
-    local mod="/lib/modules/$(uname -r)/kernel/drivers/bluetooth"
-
-    # backup originals
-    [ -f "${mod}/btusb.ko.zst" ] && cp "${mod}/btusb.ko.zst" "${mod}/btusb.ko.zst.bak" 2>/dev/null || true
-    [ -f "${mod}/btmtk.ko.zst" ] && cp "${mod}/btmtk.ko.zst" "${mod}/btmtk.ko.zst.bak" 2>/dev/null || true
-
-    step "Installing Bluetooth modules"
-    if [ -f btusb.ko.zst ] && [ -f btmtk.ko.zst ]; then
-        install -m 644 btusb.ko.zst btmtk.ko.zst "$mod/"
+    step "Building btusb + btmtk with MT7902 support"
+    mkdir -p "$STATE_DIR"
+    assemble_bt_package "$pkg"
+    if [ "$USE_DKMS" = true ] && command -v dkms >/dev/null 2>&1; then
+        dkms_install_pkg mt7902-bt "$BT_DKMS_VER" "$pkg" || return 1
     else
-        install -m 644 btusb.ko btmtk.ko "$mod/"
+        manual_install_pkg mt7902-bt "$pkg" btusb btmtk || return 1
     fi
 
+    step "Loading Bluetooth modules"
     rmmod btusb 2>/dev/null || true
     rmmod btmtk 2>/dev/null || true
-    depmod -a
-    if ! modprobe btmtk; then
-        fail "Failed to load btmtk (see Secure Boot warning above if shown)"
-        exit 1
+    if ! try_modprobe btusb; then
+        fail "btusb did not load"
+        explain_load_failure
+        return 1
     fi
-    if ! modprobe btusb; then
-        fail "Failed to load btusb (see Secure Boot warning above if shown)"
-        exit 1
+    # DKMS puts it under updates/ (Debian, Arch) or extra/ (Fedora); anything
+    # but the kernel's own drivers/bluetooth means the patched copy won
+    case "$(modinfo -n btusb 2>/dev/null)" in
+        */kernel/drivers/bluetooth/*|"") warn "btusb loaded from $(modinfo -n btusb 2>/dev/null) — not the patched copy" ;;
+        *)                              ok "Patched btusb loaded ($(modinfo -n btusb))" ;;
+    esac
+    for i in $(seq 1 10); do
+        ls /sys/class/bluetooth/hci* >/dev/null 2>&1 && break
+        sleep 1
+    done
+    if ls /sys/class/bluetooth/hci* >/dev/null 2>&1; then
+        ok "Bluetooth controller is up"
+    else
+        warn "No Bluetooth controller yet — it usually appears after a reboot"
     fi
-    ok "Modules loaded"
-
-    cd "$SCRIPT_DIR"
 }
 
 # ── main ──────────────────────────────────────────────────────
 detect_distro
 show_banner
 show_info_box
+
+# Runs on every kernel, the in-tree case included: that is exactly where a
+# stale copy from an old run hides the firmware the distribution keeps current.
+check_shadowing_firmware
 
 if [ "$DO_KERNEL_UPGRADE" = true ]; then
     upgrade_kernel || true
@@ -1217,8 +1466,7 @@ fi
 # kernels the headers package often does not exist and that used to abort the
 # whole run at step 1.
 if [ "$DO_WIFI" = true ] && \
-   [ "$FORCE_CUSTOM" = false ] && [ "$USE_FALLBACK" = false ] && \
-   intree_supports_mt7902; then
+   [ "$FORCE_CUSTOM" = false ] && intree_supports_mt7902; then
     echo ""
     echo -e "  ${WHITE}── WiFi ──────────────────────────────────${NC}"
     if use_intree_driver; then
@@ -1255,11 +1503,21 @@ if [ "$DO_WIFI" = true ]; then
     install_wifi || WIFI_FAILED=true
 fi
 
+BT_FAILED=false
 if [ "$DO_BT" = true ]; then
     echo ""
     echo -e "  ${WHITE}── Bluetooth ─────────────────────────────${NC}"
-    install_bt
+    install_bt || BT_FAILED=true
 fi
+
+mkdir -p "$STATE_DIR"
+{
+    echo "date=$(date -Is)"
+    echo "kernel=${KVER}"
+    echo "wifi_driver=${WIFI_DRIVER_USED}"
+    echo "wifi_failed=${WIFI_FAILED}"
+    echo "bt_failed=${BT_FAILED}"
+} > "${STATE_DIR}/last-install"
 
 echo ""
 echo -e "${DIM}────────────────────────────────────────────────────────${NC}"
@@ -1268,6 +1526,9 @@ if [ "$WIFI_FAILED" = true ]; then
     echo -e "  ${YELLOW}${BOLD}Installation finished with errors.${NC}"
     echo -e "  ${YELLOW}WiFi could not be installed — no driver loaded.${NC}"
     echo -e "  ${DIM}Stock drivers were left untouched, so your system is unchanged.${NC}"
+elif [ "$BT_FAILED" = true ]; then
+    echo -e "  ${YELLOW}${BOLD}Installation finished with errors.${NC}"
+    echo -e "  ${YELLOW}Bluetooth could not be installed — see above.${NC}"
 else
     echo -e "  ${GREEN}${BOLD}Installation complete.${NC}"
 fi
@@ -1290,11 +1551,16 @@ if [[ "$WIFI_DRIVER_USED" == *"gen4"* ]]; then
     echo -e "    ${DIM}2. Increase Timeout:   sudo modprobe mt7902 cmd_timeout_ms=8000${NC}"
     echo -e "    ${DIM}3. Force Load (Dead Card): sudo modprobe mt7902 mcu_bypass=1${NC}"
     echo ""
-    echo -e "  ${YELLOW}Still having problems?${NC} ${DIM}Re-run with the fallback driver:${NC}"
-    echo -e "    ${DIM}sudo ./install.sh --fallback${NC}"
-elif [[ "$WIFI_DRIVER_USED" == *"hmtheboy154"* ]]; then
-    echo -e "  ${DIM}Using alternative driver by hmtheboy154.${NC}"
-    echo -e "  ${DIM}Source: https://github.com/hmtheboy154/mt7902${NC}"
+    echo -e "  ${YELLOW}Still having problems?${NC} ${DIM}Try the mt76-based drivers:${NC}"
+    echo -e "    ${DIM}sudo ./install.sh --mt7902e   or   sudo ./install.sh --mt76${NC}"
+elif [[ "$WIFI_DRIVER_USED" == mt7902e* ]]; then
+    echo -e "  ${DIM}Source: ${REPO_URL}${NC}"
+    if mt76_supports_kernel; then
+        echo -e "  ${DIM}WiFi misbehaving? The newer mt76 driver may do better:${NC}"
+        echo -e "    ${DIM}sudo ./install.sh --mt76${NC}"
+    fi
+elif [[ "$WIFI_DRIVER_USED" == mt76* ]]; then
+    echo -e "  ${DIM}Source: ${REPO_URL} — diagnostics: ${SCRIPT_DIR}/mt76/check-driver.sh${NC}"
 fi
 
 # Anything other than the in-tree driver means the kernel is older than 7.1;
@@ -1309,6 +1575,10 @@ echo ""
 if [ "$WIFI_FAILED" = true ]; then
     echo -e "  ${DIM}Not rebooting automatically — read the errors above first.${NC}"
     exit 1
+fi
+if [ "$NO_REBOOT" = true ]; then
+    echo -e "  ${DIM}Not rebooting (--no-reboot). Reboot yourself to finish.${NC}"
+    exit 0
 fi
 
 echo -e "  ${YELLOW}Rebooting in 10 seconds... (Ctrl+C to cancel)${NC}"

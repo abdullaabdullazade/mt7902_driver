@@ -861,19 +861,35 @@ EXPORT_SYMBOL_GPL(mt76_reset_device);
 struct mt76_phy *mt76_vif_phy(struct ieee80211_hw *hw,
 			      struct ieee80211_vif *vif)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
 	struct mt76_vif_link *mlink = (struct mt76_vif_link *)vif->drv_priv;
 	struct mt76_chanctx *ctx;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
 	if (!hw->wiphy->n_radio)
 		return hw->priv;
-#endif
 
+	/*
+	 * No channel context yet (early station events on a single-radio
+	 * device): use the primary phy. Returning NULL here makes
+	 * mt76_sta_state() fail with -EINVAL, seen as "failed to insert STA
+	 * entry for the AP (error -22)" and no association at all.
+	 * hmtheboy154/mt7902 PR #16 / issue #27.
+	 */
 	if (!mlink->ctx)
-		return NULL;
+		return hw->priv;
 
 	ctx = (struct mt76_chanctx *)mlink->ctx->drv_priv;
 	return ctx->phy;
+#else
+	/*
+	 * wiphy->n_radio does not exist before 6.15, and neither did
+	 * multi-radio support in mt76: every vif lives on the primary phy.
+	 * The backport used to fall through to the chanctx lookup, which
+	 * returns NULL during association (error -22). hmtheboy154/mt7902
+	 * PR #22.
+	 */
+	return hw->priv;
+#endif
 }
 EXPORT_SYMBOL_GPL(mt76_vif_phy);
 

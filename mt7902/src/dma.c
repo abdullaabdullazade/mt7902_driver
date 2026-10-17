@@ -8,9 +8,43 @@
 #include "dma.h"
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0))
-static inline void compat_init_dummy_netdev(struct net_device *dev)
+/*
+ * 6.8 内核还没有 alloc_netdev_dummy()，但这里绝不能用 init_dummy_netdev()：
+ *
+ *   init_dummy_netdev() 是给「内嵌在驱动结构体里的 net_device」
+ *   （mt76 <= 6.8 的 struct mt76_dev.napi_dev 就是这种用法）准备的，
+ *   它开头第一句就是
+ *	memset(dev, 0, sizeof(struct net_device));
+ *
+ *   对 alloc_netdev() 分配出来的设备，这一句抹掉了 alloc_netdev_mqs()
+ *   刚刚建好的东西（net/core/dev.c 里的顺序：dev_addr_init ->
+ *   dev_net_set -> INIT_LIST_HEAD(napi_list) -> setup(dev)）：
+ *	dev->dev_addr  = NULL   ← 原本指向 dev_addrs 里的地址；
+ *				  释放时 dev_addr_flush() -> dev_addr_check()
+ *				  对 NULL 做 memcmp(MAX_ADDR_LEN) → Oops
+ *	dev->dev_addrs = 全 0
+ *	dev->padded    = 0      ← netdev_freemem() 靠它还原 kvzalloc 指针
+ *
+ *   紧接着 init_dummy_netdev() 还会自己写上 dev->reg_state =
+ *   NETREG_DUMMY —— 这是第二颗雷：6.8 的 free_netdev() 只认
+ *   NETREG_UNINITIALIZED（主线要到 6.10 才在 free_netdev() 里补上对
+ *   NETREG_DUMMY 的判断），否则就会撞上
+ *   BUG_ON(dev->reg_state != NETREG_UNREGISTERED)。
+ *
+ *   于是 mt76_dma_cleanup() -> free_netdev() 每走必炸：关机
+ *   （mt7921_pci_shutdown -> mt7921_pci_remove）和 rmmod 都走这条路，
+ *   表现为「关机卡住只能长按电源键」「rmmod 卡在 Unloading」。
+ *
+ * 正确做法（= 主线 6.10 alloc_netdev_dummy() 用的 init_dummy_netdev_core()，
+ * 只是 6.8 上绝不能跟着设 NETREG_DUMMY）：不碰 alloc_netdev_mqs() 已建好的
+ * 东西，reg_state 保持 NETREG_UNINITIALIZED，free_netdev() 就会走
+ * netdev_freemem() 这条「驱动错误处理」路径正确释放；dev_net / napi_list
+ * 也已经在 setup() 之前设好了，这里只需补两个 NAPI 用得到的链路状态位。
+ */
+static void compat_init_dummy_netdev(struct net_device *dev)
 {
-	init_dummy_netdev(dev);
+	set_bit(__LINK_STATE_PRESENT, &dev->state);
+	set_bit(__LINK_STATE_START, &dev->state);
 }
 
 #ifndef alloc_netdev_dummy

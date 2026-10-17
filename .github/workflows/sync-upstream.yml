@@ -1,16 +1,20 @@
-name: Sync Upstream Repos
+name: Sync upstream
+
+# Keeps the bundled copies of the two upstreams that are still alive in step:
+#   mt76/        <- morrownr/mt76            (WiFi, mainline mt76 at 7.3 level)
+#   mt7902_temp/ <- OnlineLearningTutorials/mt7902_temp (Bluetooth trees)
+# hmtheboy154/mt7902 (mt7902/) is archived and carries local fixes, and
+# gen4-mt7902/ is a vendor tree with local fixes too, so neither is synced:
+# overwriting them would throw those fixes away.
+#
+# One branch, "upstream-sync", is force-updated and one pull request kept
+# open; nothing is opened when nothing changed. The synced commit ids live in
+# .upstream-sync/ on main once the PR is merged.
 
 on:
   schedule:
-    # Run daily at 06:00 UTC
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
   workflow_dispatch:
-    inputs:
-      force_sync:
-        description: 'Force sync even if no changes detected'
-        required: false
-        default: 'false'
-        type: boolean
 
 permissions:
   contents: write
@@ -20,146 +24,61 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Git
+      - name: Sync
+        id: sync
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Check WiFi upstream (gen4-mt7902)
-        id: wifi_check
-        run: |
-          UPSTREAM_REPO="https://github.com/hmtheboy154/gen4-mt7902.git"
-          LAST_SHA=""
-          CHANGES_DETECTED=false
-
-          if [ -f .upstream-sync/wifi.sha ]; then
-            LAST_SHA=$(cat .upstream-sync/wifi.sha)
-          fi
-
-          # Get latest commit from upstream
-          LATEST_SHA=$(git ls-remote "$UPSTREAM_REPO" HEAD | awk '{print $1}')
-
-          echo "Last synced WiFi SHA: $LAST_SHA"
-          echo "Latest WiFi SHA: $LATEST_SHA"
-
-          if [ "$LAST_SHA" != "$LATEST_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
-            CHANGES_DETECTED=true
-          fi
-
-          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
-          echo "changes=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
-
-      - name: Check Bluetooth upstream (mt7902_temp)
-        id: bt_check
-        run: |
-          UPSTREAM_REPO="https://github.com/OnlineLearningTutorials/mt7902_temp.git"
-          LAST_SHA=""
-          CHANGES_DETECTED=false
-
-          if [ -f .upstream-sync/bt.sha ]; then
-            LAST_SHA=$(cat .upstream-sync/bt.sha)
-          fi
-
-          LATEST_SHA=$(git ls-remote "$UPSTREAM_REPO" HEAD | awk '{print $1}')
-
-          echo "Last synced BT SHA: $LAST_SHA"
-          echo "Latest BT SHA: $LATEST_SHA"
-
-          if [ "$LAST_SHA" != "$LATEST_SHA" ] || [ "${{ inputs.force_sync }}" = "true" ]; then
-            CHANGES_DETECTED=true
-          fi
-
-          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
-          echo "changes=$CHANGES_DETECTED" >> $GITHUB_OUTPUT
-
-      - name: Sync WiFi driver
-        if: steps.wifi_check.outputs.changes == 'true'
-        run: |
-          echo "📶 Syncing WiFi driver from upstream..."
-
-          # Clone upstream into temp dir
-          git clone --depth 1 https://github.com/hmtheboy154/gen4-mt7902.git /tmp/wifi-upstream
-
-          # Remove old source (keep .git out of it)
-          rm -rf gen4-mt7902/*
-
-          # Copy new source (exclude .git)
-          rsync -av --exclude='.git' /tmp/wifi-upstream/ gen4-mt7902/
-
-          # Update tracking SHA
+          set -euo pipefail
           mkdir -p .upstream-sync
-          echo "${{ steps.wifi_check.outputs.latest_sha }}" > .upstream-sync/wifi.sha
+          changed=""
 
-          echo "✔ WiFi driver synced"
-
-      - name: Sync Bluetooth driver
-        if: steps.bt_check.outputs.changes == 'true'
-        run: |
-          echo "🔵 Syncing Bluetooth driver from upstream..."
-
-          git clone --depth 1 https://github.com/OnlineLearningTutorials/mt7902_temp.git /tmp/bt-upstream
-
-          rm -rf mt7902_temp/*
-
-          rsync -av --exclude='.git' /tmp/bt-upstream/ mt7902_temp/
-
-          mkdir -p .upstream-sync
-          echo "${{ steps.bt_check.outputs.latest_sha }}" > .upstream-sync/bt.sha
-
-          echo "✔ Bluetooth driver synced"
-
-      - name: Create Pull Request
-        if: steps.wifi_check.outputs.changes == 'true' || steps.bt_check.outputs.changes == 'true'
-        run: |
-          BRANCH="upstream-sync/$(date +%Y%m%d-%H%M%S)"
-          git checkout -b "$BRANCH"
-
-          git add -A
-          
-          # Build commit message
-          MSG="🔄 Upstream sync $(date +%Y-%m-%d)"
-          BODY=""
-
-          if [ "${{ steps.wifi_check.outputs.changes }}" = "true" ]; then
-            MSG="$MSG | WiFi"
-            BODY="${BODY}\n## 📶 WiFi Driver Updated\n- Source: [gen4-mt7902](https://github.com/hmtheboy154/gen4-mt7902)\n- Commit: \`${{ steps.wifi_check.outputs.latest_sha }}\`\n"
+          mt76_sha=$(git ls-remote https://github.com/morrownr/mt76.git HEAD | cut -f1)
+          if [ "$mt76_sha" != "$(cat mt76/.upstream-sha 2>/dev/null)" ]; then
+            git clone -q https://github.com/morrownr/mt76.git /tmp/mt76
+            fw=$(mktemp -d)
+            cp mt76/firmware/* "$fw/"
+            rsync -a --delete --exclude=.git --exclude=.github --exclude='firmware/' /tmp/mt76/ mt76/
+            mkdir -p mt76/firmware
+            for f in WIFI_MT7902_patch_mcu_1_1_hdr.bin WIFI_RAM_CODE_MT7902_1.bin BT_RAM_CODE_MT7902_1_1_hdr.bin LICENSE.mediatek; do
+              cp "/tmp/mt76/firmware/$f" mt76/firmware/ 2>/dev/null || cp "$fw/$f" mt76/firmware/
+            done
+            echo "$mt76_sha" > mt76/.upstream-sha
+            changed="$changed mt76@${mt76_sha:0:7}"
           fi
 
-          if [ "${{ steps.bt_check.outputs.changes }}" = "true" ]; then
-            MSG="$MSG | BT"
-            BODY="${BODY}\n## 🔵 Bluetooth Driver Updated\n- Source: [mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp)\n- Commit: \`${{ steps.bt_check.outputs.latest_sha }}\`\n"
+          bt_sha=$(git ls-remote https://github.com/OnlineLearningTutorials/mt7902_temp.git HEAD | cut -f1)
+          if [ "$bt_sha" != "$(cat .upstream-sync/mt7902_temp.sha 2>/dev/null)" ]; then
+            git clone -q https://github.com/OnlineLearningTutorials/mt7902_temp.git /tmp/bt
+            for d in /tmp/bt/linux-*; do
+              rsync -a --delete "$d/" "mt7902_temp/$(basename "$d")/"
+            done
+            cp /tmp/bt/README.md mt7902_temp/README.md
+            echo "$bt_sha" > .upstream-sync/mt7902_temp.sha
+            changed="$changed mt7902_temp@${bt_sha:0:7}"
           fi
 
-          # Check if there are actually file changes
-          if git diff --cached --quiet; then
-            echo "No file changes detected, skipping PR"
-            exit 0
-          fi
+          echo "changed=${changed# }" >> "$GITHUB_OUTPUT"
 
-          git commit -m "$MSG"
-          git push origin "$BRANCH"
-
-          # Create PR using GitHub CLI
-          echo -e "$BODY" | gh pr create \
-            --title "$MSG" \
-            --body-file /dev/stdin \
-            --base main \
-            --head "$BRANCH" \
-            --label "upstream-sync"
+      - name: Open or update the pull request
+        if: steps.sync.outputs.changed != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto-merge (direct commit to main)
-        if: (steps.wifi_check.outputs.changes == 'true' || steps.bt_check.outputs.changes == 'true') && github.event.inputs.force_sync != 'true'
+          CHANGED: ${{ steps.sync.outputs.changed }}
         run: |
-          # If you prefer auto-merge without PR, uncomment below and remove the PR step above
-          # git add -A
-          # git commit -m "🔄 Auto-sync upstream $(date +%Y-%m-%d)" || true
-          # git push origin main
-          echo "PR created. Review and merge manually or set up auto-merge."
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B upstream-sync
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -q -m "chore: sync upstream ($CHANGED)"
+          git push -f origin upstream-sync
+          body="Automatic sync: $CHANGED. The build workflow on this PR compiles every driver against several Ubuntu kernels; merge only when it is green."
+          if gh pr view upstream-sync --json state -q .state 2>/dev/null | grep -q OPEN; then
+            gh pr edit upstream-sync --title "chore: sync upstream ($CHANGED)" --body "$body"
+          else
+            gh pr create --base main --head upstream-sync --title "chore: sync upstream ($CHANGED)" --body "$body"
+          fi

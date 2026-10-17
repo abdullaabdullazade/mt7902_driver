@@ -1,0 +1,50 @@
+# Build artifacts
+*.o
+*.o.cmd
+.*.o.cmd
+.*.ko.cmd
+.*.mod.cmd
+.*.mod.o.cmd
+.module-common.o.cmd
+.Module.symvers.cmd
+.modules.order.cmd
+*.ko
+*.ko.xz
+*.ko.zst
+*.ko.gz
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+*.symvers.tmp
+*.order
+modules.order
+Module.symvers
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# OpenWrt
+ipkg-*
+
+# Tools
+tools/Makefile
+tools/mt76-test
+
+# Temp dirs
+tmp_fw/
+
+# Editor swap/backup
+*~
+*.swp
+*.swo
+.*.swp
+picks-clean.txt
+picks-blocked.txt
+picks-broken.txt
+
+# Secure Boot signing key created by make sign-install
+MOK.priv
+MOK.der

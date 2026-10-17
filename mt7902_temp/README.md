@@ -1,8 +1,41 @@
-# 🎯 mt7902 driver development (⚡ in progress)
-We are trying to develop the driver for the Mediatek mt7902 wifi 6E chip
 
-## 🔧 Firmwares used
-Firmwares are stored in `mt7902_firmware` folder.
+<div align="right">
+  <details>
+    <summary >🌐 Language</summary>
+    <div>
+      <div align="center">
+        <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=en">English</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=zh-CN">简体中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=zh-TW">繁體中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=ja">日本語</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=ko">한국어</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=hi">हिन्दी</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=th">ไทย</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=fr">Français</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=de">Deutsch</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=es">Español</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=it">Italiano</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=ru">Русский</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=pt">Português</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=nl">Nederlands</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=pl">Polski</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=ar">العربية</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=fa">فارسی</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=tr">Türkçe</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=vi">Tiếng Việt</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=id">Bahasa Indonesia</a>
+        | <a href="https://openaitx.github.io/view.html?user=OnlineLearningTutorials&project=mt7902_temp&lang=as">অসমীয়া</
+      </div>
+    </div>
+  </details>
+</div>
+
+# 🎯 MT7902 Driver as Sub-Part of MT7921 Driver (✅ Working)
+Mediatek mt7902 wifi 6E chip Bluetooth and WiFi Support
+
+> [!IMPORTANT]
+> Linux 7.1 Kernel Officially Supports the MT7902 WIFI 6E chip
+
 
 ## 📁 Cloning the repository
 Clone the repository to your local pc
@@ -13,6 +46,72 @@ If you don't want to clone past history than
   ```
   git clone --depth 1 https://github.com/OnlineLearningTutorials/mt7902_temp
   ```
+
+## Installation
+
+
+### 🚀 Installation Guide Script (Recommended for Ubuntu Based System)
+Make the script executable if not already
+```
+chmod +x ./install_guide.sh
+```
+Now run this script
+```
+./install_guide.sh
+```
+It will automatically prompt for password when necessary
+* This script will ask you to install firmware, bluetooth and wifi driver one by one
+* Tested on Ubuntu with linux 7.0 kernel
+
+### 🚀 Easy Automatic Fix (Recommended for Arch Based System)
+If you want to quickly fix your WiFi and Bluetooth on any modern kernel, follow these steps:
+
+Make the script executable if not already
+```
+chmod +x ./fix_my_wifi.sh
+```
+
+**Run the automatic fix script** with sudo:
+```bash
+sudo bash fix_my_wifi.sh
+```
+
+#### 📖 What this script does:
+* **Checks for dependencies:** Ensures you have `gcc`/`clang`, `make`, `bc`, and your current `kernel-headers` installed. If not - installs with ur preffered package manager
+* **Compiles Drivers:** Automatically builds both WiFi and Bluetooth drivers for your exact kernel version.
+* **Persistent Fix:** Installs a system service that ensures your WiFi stays active even after you restart your computer.
+* **Safety:** Installs modules into a custom directory (`/lib/modules/mt7902_custom`) to avoid messing with your default system files.
+
+> [!NOTE]
+> You will need an internet connection (via Ethernet or USB tethering from your phone) the first time you run this to download the necessary build tools. (Such as compilator, linux-headers, etc)
+
+
+## ✅ Tested On (Verified Working)
+This fix has been verified and is confirmed working on:
+
+* **Brand:** ASUS
+* **Model:** Vivobook Go (E1404FA), Vivobook 14 (X1404ZA), Vivobook (M1502YA)
+* **Chipset:** MediaTek MT7902 (WiFi 6E)
+* **Kernel Version:** 6.19.0 (Linux), 6.19.11, 6.19.14, 7.0.7, 7.1.x
+* **OSes:** Arch, Ubuntu, Bazzite (Fedora Silverblue-based, immutable/ostree)
+* **Package Manager:** pacman, apt, rpm-ostree (build-only, see note below)
+
+> [!NOTE]
+> **Immutable/ostree distros (Bazzite, Silverblue, uCore, etc.):** `/lib/modules` is read-only, so
+> `fix_my_wifi.sh`'s `/lib/modules/mt7902_custom` target isn't writable — install to `/var/lib/mt7902_modules`
+> instead (persists across `rpm-ostree` updates). With SELinux enforcing, loading a module from that path
+> is denied (`avc: denied { module_load } ... tcontext=var_lib_t`) unless you relabel it first:
+> `sudo semanage fcontext -a -t modules_object_t '/var/lib/mt7902_modules(/.*)?' && sudo restorecon -R /var/lib/mt7902_modules`.
+> Everything else (build against matched `kernel-devel`, firmware, systemd service) works as documented.
+
+## Available for:
+* **OS**: Any os that support one of PM`s
+* **Preffered package managers**: apt, pacman, dnf, zypper, nix-shell
+* **Kernel versions**: 6.14-7.1.x
+
+
+## 🔧 Firmwares used
+Firmwares are stored in `firmware` folder.
 
 
 ## 📱 Bluetooth ✅ (Working)
@@ -37,8 +136,26 @@ sudo insmod btusb.ko
 ```
 Now check your bluetooth is working now.
 
-## 💻 WiFi (⚡ in progress)
+## 💻 WiFi ✅ (Working)
 > [!IMPORTANT]
 > A working repo with some limitation is [here](https://github.com/hmtheboy154/gen4-mt7902)
 
-We are trying to build the driver for mt7902 wifi card, it is not completed - work in progress.
+WiFi driver for the mt7902, recently released by mediatek is inside the `latest` folder. 
+
+If you are using Ubuntu than just go to the `latest` folder and run the following command in the termianl. 
+```
+make
+```
+
+It will compile all modules, compress it and install it (replace original kernel module with the modified module). If you are some other distro or not want all steps and only wants to compile the code, than run in the termianl 
+```
+make module_compile
+```
+To compress the module you compiled, than run in terminal
+```
+make module_compress
+```
+To install the compressed module to the system's kernel module, run in terminal
+```
+make module_install
+```
