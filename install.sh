@@ -145,9 +145,6 @@ EOF
 }
 
 # parse args — default is --all
-if [ $# -eq 0 ]; then
-    DO_WIFI=true; DO_BT=true
-fi
 
 for arg in "$@"; do
     case $arg in
@@ -167,6 +164,13 @@ for arg in "$@"; do
         *)          echo "Unknown option: $arg"; usage ;;
     esac
 done
+# Options that only change *how* (--mt76, --no-dkms, --no-reboot, ...) must
+# not change *what*: with neither --wifi nor --bt, install both. This used to
+# key off "no arguments at all", so e.g. `install.sh --fallback` installed
+# nothing and still printed "Installation complete".
+if [ "$DO_WIFI" = false ] && [ "$DO_BT" = false ]; then
+    DO_WIFI=true; DO_BT=true
+fi
 
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}✗ Run this script with sudo${NC}"
