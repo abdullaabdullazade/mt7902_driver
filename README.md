@@ -1,382 +1,203 @@
-# mt7902-linux
+# MT7902 driver for Linux
 
-Out-of-tree WiFi and Bluetooth drivers for the **MediaTek MT7902** M.2 PCIe wireless card on Linux.
+[![Build](https://github.com/abdullaabdullazade/mt7902_driver/actions/workflows/build.yml/badge.svg)](https://github.com/abdullaabdullazade/mt7902_driver/actions/workflows/build.yml)
 
-> **On kernel 7.1 or newer you probably do not need this repo.**
-> MT7902 (`14c3:7902`) support is merged into the in-tree `mt7921e` driver as of
-> **Linux 7.1**, and the firmware ships in `linux-firmware`. Upstream handles the
-> chip's quirks directly: it skips the MCU-WA ring, uses TXQ index 15 for MCU-WM
-> with a larger shared RX Ring0, clears `wm2_complete_mask` in its own IRQ map,
-> and leaves runtime PM disabled for this chip. Check your kernel with:
+WiFi and Bluetooth for the **MediaTek MT7902** (`14c3:7902`, Filogic 310) on
+Linux kernels that do not support it yet. One command, works offline, survives
+kernel updates, and removes cleanly.
+
+> **On kernel 7.1 or newer you do not need this.** The card is supported by the
+> kernel itself. Check:
 >
 > ```sh
-> modinfo mt7921e | grep 7902     # a match means your kernel already supports it
+> modinfo mt7921e | grep -i 7902   # any output = your kernel already supports it
 > ```
 >
-> `install.sh` performs this check and will use the in-tree driver instead of
-> building anything. Pass `--force-custom` to override.
-
-Older kernels (6.19 and earlier, including Ubuntu 24.04's 6.8) do **not** claim
-the device — `mt7921e` there lists only `7920/0616/0608/7922/7961`, so the card
-shows up as `UNCLAIMED`. This repo bundles community-maintained out-of-tree
-drivers and forward-ports applicable upstream fixes so those kernels get both
-WiFi and Bluetooth working today.
-
-### What works on which kernel
-
-| Kernel | What `install.sh` uses | Notes |
-|--------|------------------------|-------|
-| **7.1 and newer** | in-tree `mt7921e` + `btusb` | Nothing to install. `install.sh` detects this and exits early. |
-| **6.12 – 7.0** | `mt7902e` ([hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902) + the fixes below), then [morrownr/mt76](https://github.com/morrownr/mt76) if that does not work | Ubuntu 24.04's HWE kernel is 7.0, which has no in-tree support. `--mt76` tries morrownr/mt76 first. |
-| **6.6 – 6.11** | `mt7902e` | Includes Ubuntu 24.04's original 6.8. |
-| **older than 6.6** | bundled `gen4-mt7902` | Vendor tree; frequently fails MCU init. Last resort. |
-
-Every driver is built with DKMS, so it is rebuilt automatically on kernel
-updates, and is bundled in this repository: the install works without a
-network connection, which is the usual situation when WiFi is what is missing.
-
-Firmware ships in `linux-firmware` as of its 20260309 release. If your system
-already has it — compressed or not — `install.sh` leaves it alone and never
-puts a copy in front of it. `firmware/` here holds the same files
-(WiFi 20251212, Bluetooth 20250826) for systems that do not have them yet.
-
-### Moving to the in-tree driver later
-
-If you would rather run the driver the kernel ships than one from here, you
-need kernel 7.1 or newer. How you get there depends on the distribution:
-
-| Distribution | Path to 7.1 |
-|---|---|
-| Arch, openSUSE Tumbleweed | `sudo pacman -Syu` / `sudo zypper dup` — rolling, so it is probably there already |
-| Fedora | Fedora ships new kernel series to existing releases, so `sudo dnf upgrade --refresh` gets you there once 7.1 lands for your release |
-| Ubuntu / Debian stable | A release does not move to a new kernel series. Either upgrade to a release that ships 7.1, or install a mainline build with `sudo ./install.sh --upgrade-kernel` |
-| Ubuntu LTS | The HWE stack tracks newer kernels, but only as far as the LTS provides |
-
-`install.sh --upgrade-kernel` installs an **unsigned mainline** kernel. It will
-not boot with Secure Boot enabled (the installer checks and refuses), it is not
-supported by your distribution, and you update it by installing the next build
-yourself. It suits testing more than a daily machine — a distribution that
-ships 7.1 is the better long-term answer.
-
-Once you are on 7.1, remove what this repo installed before relying on the
-in-tree driver, otherwise the blacklist here keeps `mt7921e` from binding:
-
-```sh
-sudo ./uninstall.sh
-sudo reboot
-```
-
-After the reboot `mt7921e` claims the card on its own. Running `install.sh`
-again is harmless — it detects in-tree support and installs nothing.
-
-| | Status | Notes |
-|-|--------|-------|
-| WiFi (2.4 GHz) | Working | Stable on most hardware |
-| WiFi (5 GHz) | Working | Associates on 5 GHz (VHT, 40 MHz) on every tested kernel |
-| WiFi (6 GHz / 6E) | Untested | Kernel 5.4+ required for 6G support |
-| Bluetooth | Working | Patched `btusb` + `btmtk` modules |
+> Running `install.sh` there is harmless: it detects this and installs nothing.
 
 ## Install
 
 ```sh
 git clone https://github.com/abdullaabdullazade/mt7902_driver
 cd mt7902_driver
-sudo ./install.sh            # installs both wifi + bluetooth, then reboots
+sudo ./install.sh
 ```
 
-The script installs the build dependencies itself (Debian/Ubuntu and
-derivatives, Fedora/RHEL, Arch/CachyOS/Manjaro, openSUSE), including the
-headers for the kernel that is actually running and clang for clang-built
-kernels such as CachyOS.
+That is all. It installs the build tools and the headers for your running
+kernel, builds WiFi and Bluetooth, checks the card actually works, and reboots.
+No internet connection is needed during the install — everything it builds is
+in this repository.
 
-```sh
-sudo ./install.sh --wifi       # wifi driver + firmware only
-sudo ./install.sh --bt         # bluetooth driver + firmware only
-sudo ./install.sh --no-dkms    # build without DKMS (rebuild after kernel updates yourself)
-sudo ./install.sh --no-reboot  # do not reboot at the end
-```
+Works on Debian/Ubuntu and derivatives (Mint, Pop!_OS, Zorin, …), Fedora,
+Arch and derivatives (Manjaro, EndeavourOS, CachyOS, …) and openSUSE.
 
-### Automatic driver selection
+### Options
 
-1. **In-tree `mt7921e`**, if `modinfo mt7921e` shows the `14c3:7902` alias
-   (kernel 7.1+, or a distribution kernel with the support backported).
-   Nothing is built, nothing is blacklisted.
-2. **`mt7902e`** from `mt7902/` on kernel 6.6 and newer.
-3. **morrownr/mt76** from `mt76/` on kernel 6.12 and newer — the whole mainline
-   mt76 family at kernel 7.3 level, built as `*_git` modules next to the
-   in-kernel ones, with every MT7902 fix merged since 7.1.
-4. **`gen4-mt7902`**, only if none of the above worked.
-
-A driver counts as working when the card is bound to it, a wireless interface
-appears, and the kernel log shows no MCU timeouts. Otherwise it is removed
-again before the next one is tried, so only one driver is ever left installed.
-
-```sh
-sudo ./install.sh --mt76          # try morrownr/mt76 first
-sudo ./install.sh --mt7902e       # mt7902e first (the default; --fallback is the old name)
-sudo ./install.sh --gen4          # try the bundled vendor driver first
-sudo ./install.sh --force-custom  # build even if the kernel has in-tree support
-```
-
-### Secure Boot
-
-DKMS signs the modules, but with a key your firmware does not trust until you
-enroll it once. If a module is rejected, the installer prints the exact
-`mokutil --import` command; run it, reboot, and choose "Enroll MOK" in the
-blue screen that appears.
-
-### Stale firmware from older versions
-
-Earlier versions of this installer copied uncompressed firmware even when the
-distribution shipped it compressed. The kernel loads the uncompressed file
-first, so those copies hide every later `linux-firmware` update (Bluetooth was
-seen running a 2022 build next to a 2025 one). `install.sh` lists such files on
-every run; remove them with:
-
-```sh
-sudo ./install.sh --clean-firmware
-```
-
-Only files no package owns, and only where the distribution has its own copy,
-are removed.
+| Option | What it does |
+|---|---|
+| `--wifi` / `--bt` | install only WiFi or only Bluetooth |
+| `--mt76` | try the newer mt76 driver first (kernel 6.12+) |
+| `--no-dkms` | build without DKMS (you rebuild after each kernel update) |
+| `--no-reboot` | do not reboot at the end |
+| `--clean-firmware` | remove stale firmware copies left by older versions of this installer |
+| `--force-custom` | build a driver even on a kernel that supports the card |
+| `--upgrade-kernel` | move to a kernel with built-in support instead (see below) |
 
 ## Uninstall
 
 ```sh
-sudo ./uninstall.sh            # remove everything
-sudo ./uninstall.sh --wifi     # wifi only
-sudo ./uninstall.sh --bt       # bluetooth only
-sudo ./uninstall.sh --keep-fw  # keep firmware files
-sudo ./uninstall.sh --no-reboot
+sudo ./uninstall.sh            # everything; --wifi / --bt / --keep-fw / --no-reboot
 ```
 
-It removes every driver this repository can install (also ones from older
-versions of it), puts back the Bluetooth modules older versions overwrote, and
-never deletes a file a package owns. MT7902 firmware that is the only copy on
-the system is kept, because the in-tree driver on 7.1+ needs it.
+Removes every driver this repository installs (including ones from older
+versions of it) and gives back the distribution's own modules. Files that
+belong to a package are never touched.
 
-## How it works
+## Which driver you get
 
-**WiFi** — `mt7902/` is [hmtheboy154/mt7902](https://github.com/hmtheboy154/mt7902)
-(mainline mt76 with MediaTek's MT7902 series, backported to 6.6+; archived
-upstream) with the fixes listed below. `mt76/` is
-[morrownr/mt76](https://github.com/morrownr/mt76). `gen4-mt7902/` is the vendor
-driver from Xiaomi's BSP.
+| Your kernel | Driver |
+|---|---|
+| 7.1 and newer | the kernel's own — nothing is installed |
+| 6.12 – 7.0 | `mt7902e`; if it does not work, `mt76` |
+| 6.6 – 6.11 | `mt7902e` |
+| older than 6.6 | `gen4-mt7902` (vendor driver, often unreliable — upgrading the kernel is better) |
 
-**Bluetooth** — `mt7902_temp/linux-X.Y/drivers/bluetooth` are patched `btusb` +
-`btmtk` trees from [mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp).
-`bluetooth-dkms/` packages them for DKMS: the modules go to `/updates/dkms`,
-which the kernel prefers over its own, so the distribution's modules are never
-overwritten. The tree is chosen per kernel; when a distribution kernel has
-backported API changes the next trees are tried until one builds. It does not
-build on 7.1+, which supports the chip itself.
-
-**Firmware** — `firmware/`, identical to `linux-firmware`; installed only
-where the system has none. Every file the installer adds is listed in
-`/var/lib/mt7902-driver/installed-files`.
-
-## Repository layout
-
-```
-├── install.sh / uninstall.sh / lib.sh
-├── firmware/            # MT7902 WiFi + BT firmware (= linux-firmware)
-├── mt7902/              # mt7902e: hmtheboy154/mt7902 + fixes   (default WiFi)
-├── mt76/                # morrownr/mt76                         (WiFi, 6.12+)
-├── gen4-mt7902/         # vendor driver                         (WiFi, last resort)
-├── bluetooth-dkms/      # DKMS packaging for the Bluetooth trees
-├── mt7902_temp/         # btusb + btmtk trees, linux-6.14 … linux-7.1
-└── .github/workflows/
-    ├── build.yml          # builds everything against Ubuntu 6.8 – 7.0
-    └── sync-upstream.yml  # weekly sync of mt76/ and mt7902_temp/ (one PR)
-```
-
-## Known issues
-
-- Can't switch to 5 GHz on SSIDs that broadcast both 2.4/5 GHz.
-- WPA3 is broken when using `iwd`. Use `wpa_supplicant`.
-- WiFi hotspot / repeater mode doesn't work.
-- S3 suspend may cause a black screen on wake. s2idle (s0ix) works.
-- Some kernel panics reported on ASUS boards with the AW-XB552NF card.
-- If BT firmware conflicts with the WiFi driver, remove the duplicate:
-  `sudo rm /lib/firmware/mediatek/mt7902/BT_RAM_CODE_MT7902_1_1_hdr.bin.zst`
-
-### Kernel panic on some hardware
-
-On certain devices (e.g. ASUS Vivobook with i3-1315U), the driver may cause a kernel panic during initialization when the MCU is in a "cold" (uninitialized) state. This has been partially mitigated with defensive patches in the driver code. If you still experience panics:
-
-```sh
-# Temporary workaround: blacklist the module to prevent loading
-echo "blacklist mt7902" | sudo tee /etc/modprobe.d/blacklist-mt7902.conf
-```
-
-The driver includes multiple layers of protection against cold-MCU panics:
-- **PCIe power cycle** at probe time forces MCU to re-initialize
-- **Retry mechanism** with configurable attempts and delay (default: 3 retries, 2s apart)
-- **Late-load service** (`mt7902-late.service`) defers loading until PCIe is stable
-- **Extended timeouts** (8s for LP_OWN handshake instead of 2s)
-
-To tune retry behavior for your hardware:
-```sh
-# Basic retry tuning
-sudo modprobe mt7902 init_retry=5 init_delay_ms=5000
-
-# Aggressive stability options (try if basic retry fails)
-# 1. Disable Runtime PM (prevents sleep/wake crashes)
-sudo modprobe mt7902 disable_rpm=1
-
-# 2. Increase Command Timeout (prevents "No response from chip" errors)
-sudo modprobe mt7902 cmd_timeout_ms=8000
-
-# 3. Nuclear Option (Bypass MCU/Chip ID checks)
-# Use this if the card is completely dead/unresponsive but you want to force load.
-sudo modprobe mt7902 mcu_bypass=1
-```
-
-### Stock driver conflict
-
-The kernel's built-in `mt7921e` / `mt7902e` / `mt76_connac_lib` drivers conflict with this driver. The installer blacklists them automatically, but if you installed manually, create the blacklist yourself:
-
-```sh
-sudo tee /etc/modprobe.d/blacklist-mt7921.conf > /dev/null <<'EOF'
-blacklist mt7921e
-blacklist mt7902e
-blacklist mt7921_common
-blacklist mt76_connac_lib
-EOF
-sudo update-initramfs -u   # or mkinitcpio -P (Arch) / dracut --force (Fedora)
-```
-
-### Hardware latchup (dead WiFi after crash)
-
-If the driver crashes or hangs, the MT7902 PCIe controller can lock up completely. Symptoms:
-- `modprobe mt7902` fails immediately
-- `dmesg` shows BAR0 read errors
-- Driver loads but WiFi interface never appears
-
-**Recovery:** You must perform a full power drain:
-1. Shut down the laptop completely
-2. Unplug the AC adapter / charger
-3. Hold the **Power button for 40 seconds**
-4. Plug back in and boot
-
-If WiFi becomes flaky, reload the module:
-
-```sh
-sudo rmmod mt7902 && sudo modprobe mt7902
-```
-
-## Tested hardware
-
-- WMDM-257AX
-- AW-XB552NF (see known issues above)
-
-Should work on other MT7902-based PCIe cards. Minimum kernel: 5.4.
+Each driver is checked after loading — the card must be bound, an interface
+must appear and the firmware must answer. If not, it is removed again and the
+next one is tried, so only one driver is ever left on the system. Everything is
+registered with DKMS and rebuilt automatically on kernel updates.
 
 ## Tested on
 
-| System | Kernel | Driver | WiFi | Bluetooth |
-|--------|--------|--------|------|-----------|
-| Ubuntu 24.04 | 6.8.0-147-generic | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
-| Ubuntu 24.04 HWE | 7.0.0-38-generic | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
-| Ubuntu 24.04 HWE, `--mt76` | 7.0.0-38-generic | `mt7921e_git` | ✅ 5 GHz, connect + ping | ✅ |
-| Fedora 43 | 6.17.1-300.fc43 | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
-| Fedora 43 | 7.2.11-100.fc43 | in-tree `mt7921e` | ✅ 5 GHz, connect + ping | ✅ in-tree |
-| Arch Linux (`linux-lts`) | 6.18.57-1-lts | `mt7902e` | ✅ 5 GHz, connect + ping | ✅ |
-| Arch Linux | 7.2.10-arch1-1 | in-tree `mt7921e` | ✅ 5 GHz, connect + ping | ✅ in-tree |
-| Arch Linux (earlier report) | 6.18.9-arch1-2 | — | ✅ Working | ✅ Working |
+Real card (AzureWave `1a3b:5520`, in an ASUS Vivobook X1605VA) passed through
+to a virtual machine of each distribution, with no network other than the card:
 
-All rows except the last were run on 17 Oct 2026 on an ASUS Vivobook (MT7902,
-Bluetooth `13d3:3579`), with the real card passed through to a VM of each
-distribution and no other network than the card itself. Each run covers:
-install, reboot, scan (2.4 + 5 GHz), association, ping, Bluetooth controller
-with firmware 20250826, `rmmod`/`modprobe`, power-off with the driver loaded
-(3–6 s, no hang), and an uninstall that leaves the distribution's modules and
-firmware in place. On 7.1+ the installer correctly installs nothing.
+| Distribution | Kernel | Driver | WiFi | Bluetooth | Shutdown |
+|---|---|---|---|---|---|
+| Ubuntu 24.04 | 6.8 | `mt7902e` | ✅ | ✅ | ✅ |
+| Ubuntu 24.04 HWE | 7.0 | `mt7902e` | ✅ | ✅ | ✅ |
+| Ubuntu 24.04 HWE | 7.0 | `mt76` (`--mt76`) | ✅ | ✅ | ✅ |
+| Fedora 43 | 6.17 | `mt7902e` | ✅ | ✅ | ✅ |
+| Fedora 43 | 7.2 | built-in | ✅ | ✅ | ✅ |
+| Arch Linux (`linux-lts`) | 6.18 | `mt7902e` | ✅ | ✅ | ✅ |
+| Arch Linux | 7.2 | built-in | ✅ | ✅ | ✅ |
 
-Not covered yet: suspend/resume, Secure Boot key enrollment, other laptops.
+WiFi = scan on 2.4 and 5 GHz, connect on 5 GHz, ping. Bluetooth = controller up
+with firmware 20250826. Every run also covered unloading and reloading the
+driver and an uninstall that left the system as it was.
 
-### Compared with the previous installer
+Earlier users also reported WMDM-257AX and AW-XB552NF cards working, and Arch
+on 6.18.9.
 
-Same card, same VMs, same kernels:
+Not tested yet: suspend/resume, Secure Boot enrollment, other laptops — reports
+welcome.
 
-| | Previous installer | This version |
+<details>
+<summary>Compared with the previous version of this installer</summary>
+
+Same card, same machines, same kernels:
+
+| | Previous version | This version |
 |---|---|---|
-| Power-off on Ubuntu 6.8 | kernel oops in `mt7921_pci_shutdown`, machine hangs | clean, 4 s |
-| Bluetooth on Fedora | patched `btusb` never loads, MediaTek firmware not set up | patched module, firmware 20250826 |
-| Bluetooth firmware on Arch | 2022 build, hides the 2025 one from `linux-firmware` | 20250826 |
-| After uninstall | deletes the distribution's MT7902 firmware | distribution files untouched |
-| Without a network | falls back to `gen4-mt7902`, which hangs in probe | builds from the bundled source |
+| Shutdown on Ubuntu 6.8 | kernel crash, machine hangs | clean |
+| Bluetooth on Fedora | did not work | works |
+| Bluetooth firmware on Arch | a 2022 build | current (2025) |
+| After uninstall | the distribution's firmware was deleted | untouched |
+| Install without internet | fell back to a driver that hangs | works |
 
-## Upstream Patch Integration
+</details>
 
-MediaTek officially submitted an 11-patch series for MT7902 to the `linux-wireless` mailing list on 2026-02-19 (author: `sean.wang@kernel.org`). The applicable fixes have been forward-ported into this out-of-tree driver:
+## Troubleshooting
 
-| Patch | Description | Status |
-|-------|-------------|--------|
-| [PATCH 03/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-3-sean.wang@kernel.org/) | irq_map quirk (mutable copy) | Architecture differs — not applied |
-| [PATCH 04/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-4-sean.wang@kernel.org/) | MT7902e DMA layout | ✅ Already correct in gen4 driver |
-| [PATCH 05/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-5-sean.wang@kernel.org/) | Mark MT7902 as hw txp | ✅ Already enabled in gen4 driver |
-| [PATCH 06/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-6-sean.wang@kernel.org/) | PSE buffer underflow barrier | ✅ **Applied** — `mgmt/rlm_domain.c` |
-| [PATCH 07/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-7-sean.wang@kernel.org/) | Ensure MCU ready before ROM patch download | ✅ **Applied** — `chips/common/fw_dl.c` |
-| [PATCH 08/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-8-sean.wang@kernel.org/) | MT7902 MCU support + firmware paths | ✅ Already present in gen4 driver |
-| [PATCH 09/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-9-sean.wang@kernel.org/) | WFDMA prefetch configuration | ✅ Already correct in gen4 driver |
-| [PATCH 10/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-10-sean.wang@kernel.org/) | MT7902 PCIe device support | Architecture differs — not applied |
-| [PATCH 11/11](https://lore.kernel.org/linux-wireless/20260219004007.19733-11-sean.wang@kernel.org/) | MT7902 SDIO device support | Architecture differs — not applied |
+**Secure Boot: "Key was rejected by service".** The driver is signed, but your
+firmware does not know the key yet. The installer prints the exact
+`mokutil --import …` command: run it, reboot, choose *Enroll MOK* in the blue
+screen, and enter the password you just set.
 
-### Key fixes applied
+**"Your kernel's own modules are missing".** Minimal installs can lack the
+kernel's WiFi/Bluetooth base modules. Install the package the message names
+(e.g. `kernel-modules` on Fedora, `linux-modules-extra` on Ubuntu) and run the
+installer again.
 
-**PATCH-07 — MCU ready check** (`chips/common/fw_dl.c`)  
-Before downloading the ROM patch, the driver now resets the MCU sync register and polls for the `FW_PWR_ON` bit (up to 1 s). This prevents cold-boot firmware download failures on affected systems.
+**WiFi dead after a crash.** The card can lock up until it loses power. Shut
+down, unplug the charger, hold the power button for 40 seconds, then boot.
 
-**PATCH-06 — PSE barrier read** (`mgmt/rlm_domain.c`)  
-After sending large txpower MCU commands, a dummy read from the PSE base register (`0x820c8000`) is performed. This prevents a hardware PSE buffer underflow that could silently corrupt MCU command delivery.
+**Old firmware.** If you used an older version of this installer, it may have
+left firmware copies that hide your distribution's newer ones. `install.sh`
+lists them; `sudo ./install.sh --clean-firmware` removes them.
 
-## Fixes on top of hmtheboy154/mt7902
+**Reporting a problem.** Attach the installer output, `sudo dmesg`, and the
+logs in `/var/lib/mt7902-driver/`.
 
-hmtheboy154/mt7902 stopped at MediaTek's February 2026 series and was archived
-in September 2026. `mt7902/` carries these on top, one commit each:
+<details>
+<summary>Options of the gen4 vendor driver (kernels older than 6.6 only)</summary>
 
-| Fix | Source | What it addresses |
-|-----|--------|-------------------|
-| associate on kernels < 6.15 | hmtheboy154/mt7902 PR #22 + #16 | `failed to insert STA entry for the AP (error -22)` |
-| shutdown / rmmod oops < 6.9 | Payton9000/mt7902 `8715c7b4fc` | freeze at power-off on 6.8 |
-| build on 6.11 | — | `pcim_iomap_region` only exists from 6.12 |
-| `disable_aspm` works again | mainline `2dd788562234` | ASPM L1 could not be disabled on 6.9+ |
-| keep join ROC until authorized | wireless tree `6f591a4bb5d9` | 4-way handshake timeouts (reason 15) |
-| suspend/resume lock inversion | wireless tree `0e6472108d51`, `3dcb98c5cb51` | deadlock on resume |
-| check drv_pmctrl on PCIe reset | wireless tree `75673ab3c0e4` | reset path |
-| ACPI SAR fixes | mainline `45f53d98cbaa`, `af97bf5a7e72`, `7825de3f75d1` | slow 5 GHz on ASUS laptops, NULL dereference |
-| CLC record validation | mainline `9417c5818a01`, `1a296bfd3e77` | malformed firmware country records |
+```sh
+sudo modprobe mt7902 init_retry=5 init_delay_ms=5000   # more init retries
+sudo modprobe mt7902 disable_rpm=1                     # no runtime power management
+sudo modprobe mt7902 cmd_timeout_ms=8000               # longer firmware timeouts
+sudo modprobe mt7902 mcu_bypass=1                      # force load an unresponsive card
+```
 
-The Bluetooth build adds the MT7902 USB IDs upstream has (`0489:e156`,
-`0e8d:1ede`, `13d3:3579/3580/3594/3596`) to trees that lack them.
+</details>
 
-All of the above is compile-tested against Ubuntu 6.8, 6.11, 6.14, 6.17 and
-7.0 headers in CI.
+## Moving to a kernel with built-in support
 
-## Upstream sync
+| Distribution | How to get 7.1 or newer |
+|---|---|
+| Arch, openSUSE Tumbleweed | `sudo pacman -Syu` / `sudo zypper dup` |
+| Fedora | `sudo dnf upgrade --refresh` |
+| Ubuntu / Debian | a newer release, or `sudo ./install.sh --upgrade-kernel` |
 
-Once a week a workflow checks morrownr/mt76 and mt7902_temp. If either moved,
-it updates the single `upstream-sync` branch and its pull request; the build
-workflow then shows whether the result still compiles. `mt7902/` and
-`gen4-mt7902/` are not synced — they carry local fixes.
+`--upgrade-kernel` installs an unsigned mainline kernel on Debian/Ubuntu: it
+does not boot with Secure Boot (the installer checks and refuses), and you
+update it yourself. On the new kernel, run `sudo ./uninstall.sh` once and
+reboot; the built-in driver then takes over.
+
+## What is inside
+
+```
+install.sh, uninstall.sh   the installer
+firmware/                  MT7902 WiFi + Bluetooth firmware, identical to linux-firmware
+mt7902/                    mt7902e — default WiFi driver, with the fixes below
+mt76/                      mt76 — newer WiFi driver for 6.12+
+gen4-mt7902/               vendor WiFi driver, last resort
+bluetooth-dkms/            builds Bluetooth for each kernel through DKMS
+mt7902_temp/               Bluetooth sources per kernel version
+```
+
+<details>
+<summary>Fixes carried in <code>mt7902/</code></summary>
+
+| Fix | Source |
+|---|---|
+| Associate on kernels before 6.15 (`error -22`) | community, hmtheboy154/mt7902 #16 / #22 |
+| No crash at shutdown on kernels before 6.9 | community, Payton9000/mt7902 |
+| Builds on kernel 6.11 | this repository |
+| `disable_aspm` works again | Linux mainline `2dd788562234` |
+| Fewer 4-way handshake timeouts | wireless tree `6f591a4bb5d9` |
+| No deadlock on suspend/resume | wireless tree `0e6472108d51`, `3dcb98c5cb51` |
+| PCIe reset error check | wireless tree `75673ab3c0e4` |
+| ACPI SAR fixes (slow 5 GHz on some ASUS laptops) | mainline `45f53d98cbaa`, `af97bf5a7e72`, `7825de3f75d1` |
+| Validate firmware country records | mainline `9417c5818a01`, `1a296bfd3e77` |
+
+Bluetooth also gets every MT7902 USB ID the mainline kernel knows
+(`0489:e156`, `0e8d:1ede`, `13d3:3579/3580/3594/3596`).
+
+</details>
+
+A weekly workflow keeps `mt76/` and the Bluetooth sources in sync with their
+upstreams through a single pull request, and every change is built against
+Ubuntu 6.8, 6.11, 6.14, 6.17 and 7.0 before it is merged.
 
 ## Credits
 
-This project wouldn't exist without the work of:
-
-- **[hmtheboy154](https://github.com/hmtheboy154)** — WiFi driver ([gen4-mt7902](https://github.com/hmtheboy154/gen4-mt7902)). Extracted the `gen4-mt79xx` driver from Xiaomi's rodin BSP and adapted it for MT7902. Also contributes to [BlissOS](https://blissos.org/).
-
-- **[OnlineLearningTutorials](https://github.com/OnlineLearningTutorials)** — Bluetooth driver and firmware ([mt7902_temp](https://github.com/OnlineLearningTutorials/mt7902_temp)). Patched `btusb`/`btmtk` for MT7902 support and provides all the firmware files.
-
-- **[morrownr](https://github.com/morrownr) and contributors** — [mt76](https://github.com/morrownr/mt76), the out-of-tree build of mainline mt76 bundled in `mt76/`.
-
-- **Payton9000, antonionesta, EdinsonMoreno** — fixes for the archived hmtheboy154/mt7902 that are carried in `mt7902/`.
-
-- **[MediaTek / sean.wang](https://lore.kernel.org/linux-wireless/?q=mt7902)** — Official upstream MT7902 patch series for the `mt76` kernel driver (Feb 2026); key fixes forward-ported into this driver.
-
-Community discussion happens on [Discord](https://discord.gg/JGhjAxEFhz).
+Built on the work of [hmtheboy154](https://github.com/hmtheboy154) (mt7902e and
+gen4 drivers), [morrownr](https://github.com/morrownr/mt76) (mt76),
+[OnlineLearningTutorials](https://github.com/OnlineLearningTutorials/mt7902_temp)
+(Bluetooth), MediaTek's upstream MT7902 work, and the community fixes listed
+above. Discussion: [Discord](https://discord.gg/JGhjAxEFhz).
 
 ## License
 
-See the individual subdirectories for license details. `mt7902_temp/`, `mt7902/` and `mt76/` are GPL v2.0; `firmware/` is under `firmware/LICENSE.mediatek`.
+GPL-2.0 for the drivers (see each directory). Firmware: `firmware/LICENSE.mediatek`.
