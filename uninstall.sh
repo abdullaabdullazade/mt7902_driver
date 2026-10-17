@@ -96,7 +96,7 @@ if [ "$RM_WIFI" = true ]; then
 
     # morrownr/mt76 (*_git modules and its blacklist of the in-kernel mt76)
     remove_mt76 "${SCRIPT_DIR}/mt76"
-    ok "morrownr/mt76 removed"
+    ok "mt76 removed"
 
     rm -f /etc/modprobe.d/blacklist-mt7921.conf /etc/modprobe.d/blacklist-mt7902.conf
     ok "Blacklists of the in-kernel drivers removed"

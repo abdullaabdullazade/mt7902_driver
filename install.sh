@@ -26,7 +26,7 @@ DO_KERNEL_UPGRADE=false
 SKIP_CARD_CHECK=false
 NO_REBOOT=false
 CLEAN_FIRMWARE=false
-FALLBACK_REPO="https://github.com/hmtheboy154/mt7902"
+REPO_URL="https://github.com/abdullaabdullazade/mt7902_driver"
 WIFI_DRIVER_USED=""
 LAST_MODPROBE_ERR=""
 
@@ -113,9 +113,9 @@ usage() {
     --bt          Install Bluetooth driver only
     --no-dkms     Build the drivers manually instead of using DKMS
                   (they then stop working after the next kernel update)
-    --mt7902e     Use hmtheboy154/mt7902 (mt7902e) first. This is the default.
+    --mt7902e     Use the mt7902e driver first. This is the default.
     --fallback    Same as --mt7902e (kept for older instructions)
-    --mt76        Try morrownr/mt76 first: mainline mt76 at kernel 7.3 level,
+    --mt76        Try the mt76 driver first: mainline mt76 at kernel 7.3 level,
                   with every MT7902 fix merged since 7.1 (kernel 6.12 - 7.0).
                   Replaces all in-kernel mt76 drivers with its own copies.
     --gen4        Try the bundled gen4-mt7902 vendor driver first
@@ -139,7 +139,7 @@ usage() {
     sudo $0               # install everything (auto-selects best driver)
     sudo $0 --wifi        # wifi driver + firmware only
     sudo $0 --bt          # bluetooth driver + firmware only
-    sudo $0 --mt76        # prefer the newer morrownr/mt76 driver
+    sudo $0 --mt76        # prefer the newer mt76 driver
 EOF
     exit 0
 }
@@ -1020,14 +1020,11 @@ install_wifi_mt7902e() {
     local src="${SCRIPT_DIR}/mt7902" stage="${STATE_DIR}/mt7902e-src" mark errs
 
     echo ""
-    echo -e "  ${WHITE}Driver: hmtheboy154/mt7902 (mt7902e)${NC}"
+    echo -e "  ${WHITE}Driver: mt7902e${NC}"
 
     if [ ! -f "${src}/Makefile" ]; then
-        step "Bundled source missing — cloning ${FALLBACK_REPO}"
-        rm -rf "$stage.git"
-        git clone --depth 1 "$FALLBACK_REPO" "$stage.git" >/dev/null 2>&1 ||
-            { fail "Could not clone ${FALLBACK_REPO} (no network?)"; return 1; }
-        src="$stage.git"
+        fail "mt7902/ is missing from this checkout — clone ${REPO_URL} again"
+        return 1
     fi
 
     remove_other_wifi_drivers mt7902e
@@ -1081,8 +1078,12 @@ install_wifi_mt7902e() {
         remove_mt7902e
         return 1
     fi
-    ok "mt7902e loaded, card bound, wireless interface present"
-    WIFI_DRIVER_USED="mt7902e (hmtheboy154/mt7902)"
+    if mt7902_pci_dev >/dev/null; then
+        ok "mt7902e loaded, card bound, wireless interface present"
+    else
+        ok "mt7902e loaded (no card on this machine to bind — --no-card-check)"
+    fi
+    WIFI_DRIVER_USED="mt7902e"
 }
 
 # ── WiFi driver: morrownr/mt76 ────────────────────────────────
@@ -1097,7 +1098,7 @@ install_wifi_mt76() {
     local src="${SCRIPT_DIR}/mt76" log="${STATE_DIR}/mt76-install.log" mark errs
 
     echo ""
-    echo -e "  ${WHITE}Driver: morrownr/mt76 (mt7921e_git)${NC}"
+    echo -e "  ${WHITE}Driver: mt76 (mt7921e_git)${NC}"
     [ -f "${src}/install-driver.sh" ] || { fail "mt76/ is missing from this checkout"; return 1; }
 
     remove_other_wifi_drivers mt76
@@ -1106,11 +1107,11 @@ install_wifi_mt76() {
     install_mt7902_firmware WIFI || return 1
     ok "Firmware in place"
 
-    step "Building morrownr/mt76 — takes a few minutes"
+    step "Building mt76 — takes a few minutes"
     mkdir -p "$STATE_DIR"
     unload_stock_mt76
     if ! ( cd "$src" && sh install-driver.sh NoPrompt NoFirmware ) > "$log" 2>&1 </dev/null; then
-        fail "morrownr/mt76 install failed"
+        fail "mt76 install failed"
         grep -vE '^\s*$' "$log" | tail -8 | while IFS= read -r l; do echo -e "        ${DIM}${l}${NC}"; done
         echo -e "        ${DIM}Full log: ${log}${NC}"
         remove_mt76 "$src"
@@ -1124,7 +1125,7 @@ install_wifi_mt76() {
         fail "mt7921e_git did not load"
         explain_load_failure
         if echo "$LAST_MODPROBE_ERR" | grep -qiE 'key was rejected|required key not available'; then
-            WIFI_DRIVER_USED="morrownr/mt76 (waiting for Secure Boot key enrollment)"
+            WIFI_DRIVER_USED="mt76 (waiting for Secure Boot key enrollment)"
             return 0
         fi
         remove_mt76 "$src"
@@ -1144,8 +1145,12 @@ install_wifi_mt76() {
         remove_mt76 "$src"
         return 1
     fi
-    ok "mt7921e_git loaded, card bound, wireless interface present"
-    WIFI_DRIVER_USED="mt7921e_git (morrownr/mt76)"
+    if mt7902_pci_dev >/dev/null; then
+        ok "mt7921e_git loaded, card bound, wireless interface present"
+    else
+        ok "mt7921e_git loaded (no card on this machine to bind — --no-card-check)"
+    fi
+    WIFI_DRIVER_USED="mt76 (mt7921e_git)"
 }
 
 # ── WiFi driver: bundled gen4-mt7902 (vendor) ─────────────────
@@ -1293,7 +1298,7 @@ install_wifi() {
                 backport_supports_kernel || { warn "Skipping mt7902e (needs kernel 6.6 or newer)"; continue; }
                 install_wifi_mt7902e && return 0 ;;
             mt76)
-                mt76_supports_kernel || { warn "Skipping morrownr/mt76 (needs kernel 6.12 or newer)"; continue; }
+                mt76_supports_kernel || { warn "Skipping mt76 (needs kernel 6.12 or newer)"; continue; }
                 install_wifi_mt76 && return 0 ;;
             gen4)
                 install_wifi_gen4 && return 0 ;;
@@ -1500,14 +1505,14 @@ if [[ "$WIFI_DRIVER_USED" == *"gen4"* ]]; then
     echo ""
     echo -e "  ${YELLOW}Still having problems?${NC} ${DIM}Try the mt76-based drivers:${NC}"
     echo -e "    ${DIM}sudo ./install.sh --mt7902e   or   sudo ./install.sh --mt76${NC}"
-elif [[ "$WIFI_DRIVER_USED" == *"hmtheboy154"* ]]; then
-    echo -e "  ${DIM}Source: https://github.com/hmtheboy154/mt7902 (with the fixes in mt7902/)${NC}"
+elif [[ "$WIFI_DRIVER_USED" == mt7902e* ]]; then
+    echo -e "  ${DIM}Source: ${REPO_URL}${NC}"
     if mt76_supports_kernel; then
         echo -e "  ${DIM}WiFi misbehaving? The newer mt76 driver may do better:${NC}"
         echo -e "    ${DIM}sudo ./install.sh --mt76${NC}"
     fi
-elif [[ "$WIFI_DRIVER_USED" == *"morrownr"* ]]; then
-    echo -e "  ${DIM}Source: https://github.com/morrownr/mt76 — diagnostics: ${SCRIPT_DIR}/mt76/check-driver.sh${NC}"
+elif [[ "$WIFI_DRIVER_USED" == mt76* ]]; then
+    echo -e "  ${DIM}Source: ${REPO_URL} — diagnostics: ${SCRIPT_DIR}/mt76/check-driver.sh${NC}"
 fi
 
 # Anything other than the in-tree driver means the kernel is older than 7.1;
