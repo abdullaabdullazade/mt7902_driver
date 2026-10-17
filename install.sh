@@ -237,6 +237,15 @@ install_deps() {
                 return 0 ;;
     esac
 
+    # The drivers here are built against the kernel's own cfg80211/mac80211
+    # and bluetooth. Minimal installs (cloud images, Fedora with only
+    # kernel-modules-core) do not have them; try to add them, separately, so
+    # a package that does not exist for this kernel cannot fail the rest.
+    case "$DISTRO" in
+        debian) apt-get install -y "linux-modules-extra-${KVER}" > /dev/null 2>&1 || true ;;
+        fedora) dnf install -y "kernel-modules-${KVER}" > /dev/null 2>&1 || true ;;
+    esac
+
     if [ "$rc" -ne 0 ]; then
         # Mainline or vendor kernels often have no matching headers package in
         # the distribution's repositories. That is not fatal on its own — the
@@ -1273,6 +1282,29 @@ EOF
     fi
 }
 
+# ── kernel base modules ───────────────────────────────────────
+# Without cfg80211/mac80211 (WiFi) or bluetooth (BT) every driver here fails
+# to load with "Unknown symbol in module"; say what is actually missing.
+missing_modules() {
+    local m out=""
+    for m in "$@"; do
+        modinfo -k "$KVER" "$m" >/dev/null 2>&1 || out="$out $m"
+    done
+    echo "${out# }"
+}
+
+explain_missing_modules() {
+    fail "Your kernel's own modules are missing: $1"
+    fail "Every driver for this card is built on top of them, so none can load."
+    case "$DISTRO" in
+        fedora) echo -e "        ${CYAN}sudo dnf install kernel-modules-${KVER}${NC}" ;;
+        debian) echo -e "        ${CYAN}sudo apt install linux-modules-extra-${KVER}${NC}" ;;
+        arch)   echo -e "        ${CYAN}sudo pacman -S $(headers_package | sed 's/-headers$//')${NC} ${DIM}(reinstall the kernel)${NC}" ;;
+        *)      echo -e "        ${DIM}Install the full module package for kernel ${KVER}${NC}" ;;
+    esac
+    echo -e "        ${DIM}Then run this installer again.${NC}"
+}
+
 # ── wifi ──────────────────────────────────────────────────────
 # Order on a kernel without in-tree support:
 #   mt7902e (default) -> morrownr/mt76 -> gen4
@@ -1284,7 +1316,14 @@ install_wifi() {
         use_intree_driver && return 0
     fi
 
-    local order d
+    local order d missing
+    missing=$(missing_modules cfg80211 mac80211)
+    if [ -n "$missing" ]; then
+        explain_missing_modules "$missing"
+        WIFI_DRIVER_USED="none (kernel modules missing: ${missing})"
+        return 1
+    fi
+
     case "$PREFER_DRIVER" in
         mt76) order="mt76 mt7902e gen4" ;;
         gen4) order="gen4 mt7902e mt76" ;;
@@ -1346,6 +1385,13 @@ install_bt() {
         return 0
     fi
 
+    local missing
+    missing=$(missing_modules bluetooth)
+    if [ -n "$missing" ]; then
+        explain_missing_modules "$missing"
+        return 1
+    fi
+
     # Put back whatever an earlier version of this installer overwrote
     remove_bt_backport
     depmod -a
@@ -1371,9 +1417,11 @@ install_bt() {
         explain_load_failure
         return 1
     fi
+    # DKMS puts it under updates/ (Debian, Arch) or extra/ (Fedora); anything
+    # but the kernel's own drivers/bluetooth means the patched copy won
     case "$(modinfo -n btusb 2>/dev/null)" in
-        */updates/*) ok "Patched btusb loaded ($(modinfo -n btusb))" ;;
-        *)           warn "btusb loaded from $(modinfo -n btusb 2>/dev/null) — not the patched copy" ;;
+        */kernel/drivers/bluetooth/*|"") warn "btusb loaded from $(modinfo -n btusb 2>/dev/null) — not the patched copy" ;;
+        *)                              ok "Patched btusb loaded ($(modinfo -n btusb))" ;;
     esac
     for i in $(seq 1 10); do
         ls /sys/class/bluetooth/hci* >/dev/null 2>&1 && break
