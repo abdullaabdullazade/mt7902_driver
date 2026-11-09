@@ -42,7 +42,10 @@ f8b59ca3  # fixes the PS buffering reverted here on 06-04. That code now needs m
 # openwrt ones, so a bare id here would be counted as a skip and throw the
 # tally off.
 
-# (none)
+# mt7921: add an option to keep the chip awake (#132)
+#   PR #134. For MT7921 cards that fail to wake from power saving and log
+#   "driver own failed". Not for upstream as it stands: wireless maintainers
+#   resist module options, and this avoids the failure without fixing it.
 
 # Section 3. Patches that have merged here.
 #
@@ -50,6 +53,11 @@ f8b59ca3  # fixes the PS buffering reverted here on 06-04. That code now needs m
 # and flows back through openwrt it arrives as a new commit with its own id,
 # and show-picks offers it as something we are missing. At that point it wants
 # a line in section 1, with the reason being that we already carry it.
+
+# mt7921 and mt7925: keep the sniffer on for real monitor vifs
+#   Patches 1 and 2 of the active monitor series sent upstream on 2026-10-27,
+#   20261027195803.711995-2 and -3-lucid_duck@justthetip.ca. Bring back the
+#   capture that #76 loses after a scan. The mt7925 one is adapted to this tree.
 
 # mt7925: do not disable the NAPI of a missing WM2 queue on reset
 #   Ash's, merged 2026-10-04 as 9d5801f from PR #122. Not on the list yet.

@@ -1265,14 +1265,22 @@ int mt76_rx_signal(u8 chain_mask, s8 *chain_signal)
 }
 EXPORT_SYMBOL(mt76_rx_signal);
 
+/* compat: the receive API moved to link stations in kernel 7.4 */
 static void
 mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
 		struct ieee80211_hw **hw,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+		struct ieee80211_link_sta **link_sta)
+#else
 		struct ieee80211_sta **sta)
+#endif
 {
 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
 	struct ieee80211_hdr *hdr = mt76_skb_get_hdr(skb);
 	struct mt76_rx_status mstat;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	struct ieee80211_sta *sta;
+#endif
 
 	mstat = *((struct mt76_rx_status *)skb->cb);
 	memset(status, 0, sizeof(*status));
@@ -1313,12 +1321,22 @@ mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
 	memcpy(status->chain_signal, mstat.chain_signal,
 	       sizeof(mstat.chain_signal));
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	sta = wcid_to_sta(mstat.wcid);
+	if (!sta)
+		*link_sta = NULL;
+	else if (mstat.wcid->link_valid)
+		*link_sta = rcu_dereference(sta->link[mstat.wcid->link_id]);
+	else
+		*link_sta = &sta->deflink;
+#else
 	if (mstat.wcid) {
 		status->link_valid = mstat.wcid->link_valid;
 		status->link_id = mstat.wcid->link_id;
 	}
 
 	*sta = wcid_to_sta(mstat.wcid);
+#endif
 	*hw = mt76_phy_hw(dev, mstat.phy_idx);
 }
 
@@ -1544,7 +1562,12 @@ mt76_check_sta(struct mt76_dev *dev, struct sk_buff *skb)
 void mt76_rx_complete(struct mt76_dev *dev, struct sk_buff_head *frames,
 		      struct napi_struct *napi)
 {
+/* compat: the receive API moved to link stations in kernel 7.4 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	struct ieee80211_link_sta *sta;
+#else
 	struct ieee80211_sta *sta;
+#endif
 	struct ieee80211_hw *hw;
 	struct sk_buff *skb, *tmp;
 	LIST_HEAD(list);

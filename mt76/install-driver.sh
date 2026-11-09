@@ -225,8 +225,16 @@ fi
 echo
 printf '  %sDetected mt76 hardware:%s\n' "${BOLD}" "${NC}"
 FOUND_HW=0
+# Rebadged adapters (Netgear 0846:xxxx and others) don't say MediaTek in
+# lsusb, so also match the USB IDs the drivers' device tables claim.
+USB_IDS=$(sed -n 's/.*USB_DEVICE[A-Z_]*(0x\([0-9a-fA-F]\{4\}\), *0x\([0-9a-fA-F]\{4\}\).*/\1:\2/p' \
+	"${DRV_DIR}"/*/usb.c 2>/dev/null | tr 'A-F' 'a-f' | sort -u | sed 's/^/ID /')
 if command -v lsusb >/dev/null 2>&1; then
-	lsusb_mt76=$(lsusb 2>/dev/null | grep -iE "mediatek|mt76|0e8d:" | head -10)
+	lsusb_all=$(lsusb 2>/dev/null)
+	lsusb_mt76=$( {
+		echo "${lsusb_all}" | grep -iE "mediatek|mt76|0e8d:"
+		[ -n "${USB_IDS}" ] && echo "${lsusb_all}" | grep -F "${USB_IDS}"
+	} | sort -u | head -10)
 	if [ -n "${lsusb_mt76}" ]; then
 		echo "${lsusb_mt76}" | while IFS= read -r line; do
 			printf "    %s\n" "${line}"
@@ -244,7 +252,7 @@ if command -v lspci >/dev/null 2>&1; then
 	fi
 fi
 # sysfs fallback: scan for USB devices bound to any mt76-family driver.
-# Catches rebadged adapters (e.g. NetGear A8500, 0846:9072) where lsusb
+# Catches rebadged adapters (e.g. NetGear A9000, 0846:9072) where lsusb
 # shows the rebadger's vendor ID instead of MediaTek's 0e8d, and the
 # vendor-string regex above never sees "mediatek" or "mt76".
 if [ "${FOUND_HW}" -eq 0 ]; then

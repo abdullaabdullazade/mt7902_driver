@@ -11,6 +11,10 @@
 #include "mcu.h"
 #include "regd.h"
 
+static bool mt7921_disable_pm;
+module_param_named(disable_pm, mt7921_disable_pm, bool, 0644);
+MODULE_PARM_DESC(disable_pm, "disable runtime power saving and deep sleep");
+
 static ssize_t mt7921_thermal_temp_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -208,7 +212,7 @@ int mt7921_register_device(struct mt792x_dev *dev)
 	dev->pm.stats.last_doze_event = jiffies;
 
 	if (!mt76_is_usb(&dev->mt76) &&
-	    !is_mt7902(&dev->mt76)) {
+	    !is_mt7902(&dev->mt76) && !mt7921_disable_pm) {
 		dev->pm.enable_user = true;
 		dev->pm.enable = true;
 		dev->pm.ds_enable_user = true;

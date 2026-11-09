@@ -1,7 +1,7 @@
 # mt76 Out-of-Tree WiFi Driver Build Infrastructure
 
 Build, install, and manage MediaTek mt76 WiFi drivers as out-of-tree kernel
-modules. Supports DKMS, non-DKMS, Secure Boot, and kernels 6.12 through 7.2.
+modules. Supports DKMS, non-DKMS, Secure Boot, and kernels 6.12 through 7.4.
 Kernels older than 7.0 are best effort.
 
 Based on [openwrt/mt76](https://github.com/openwrt/mt76), adapted for
@@ -50,9 +50,9 @@ sudo sh uninstall-driver.sh
 |--------|-------|-----|---------|-----------------|
 | MT76x0 | MT7610, MT7630, MT7650 | USB, PCIe | mt76x0u, mt76x0e | WiFi 5 (AC) |
 | MT76x2 | MT7612, **MT7662** | USB, PCIe | mt76x2u, mt76x2e | WiFi 5 (AC) |
-| MT7615 | MT7615, MT7663 | USB, PCIe, SDIO | mt7615e, mt7663u, mt7663s | WiFi 5 (AC) |
-| MT7921 | MT7920, MT7921, MT7922, **MT7902** | USB, PCIe, SDIO | mt7921e, mt7921u, mt7921s | WiFi 6E (AXE) |
-| MT7925 | MT7925, MT7927 | USB, PCIe | mt7925e, mt7925u | WiFi 7 (BE) |
+| MT7615 | MT7615, MT7663 | USB, PCIe, SDIO | mt7615u, mt7663e, mt7663s | WiFi 5 (AC) |
+| MT7921 | MT7920, MT7921, MT7922, **MT7902** | USB, PCIe, SDIO | mt7921u, mt7921e, mt7921s | WiFi 6E (AXE) |
+| MT7925 | MT7925, MT7927, MT7928 | USB, PCIe | mt7925u, mt7925e | WiFi 7 (BE) |
 
 ### Inactive Families
 
