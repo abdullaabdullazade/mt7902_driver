@@ -32,6 +32,23 @@ void mt76x02_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 }
 EXPORT_SYMBOL_GPL(mt76x02_tx);
 
+/*
+ * mac80211 pads each A-MSDU subframe to a multiple of 4 bytes by pushing the
+ * padding in front of the next subframe, and every skb of the frag_list gets
+ * a DMA buffer of its own. After a subframe of odd length, the next buffer
+ * would start at an odd address, and the TX DMA has been seen to hang on such
+ * frames. The 802.11 header, the IV and the subframe headers have even
+ * lengths, so head->len has the parity of the last subframe. Only append to
+ * a frame of even length, and only if both frames start at even addresses.
+ */
+bool mt76x02_can_aggregate_in_amsdu(struct ieee80211_hw *hw,
+				    struct sk_buff *head, struct sk_buff *skb)
+{
+	return !((head->len | (unsigned long)head->data |
+		  (unsigned long)skb->data) & 1);
+}
+EXPORT_SYMBOL_GPL(mt76x02_can_aggregate_in_amsdu);
+
 void mt76x02_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
 			  struct sk_buff *skb, u32 *info)
 {
@@ -141,11 +158,15 @@ int mt76x02_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 {
 	struct mt76x02_dev *dev = container_of(mdev, struct mt76x02_dev, mt76);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)tx_info->skb->data;
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(tx_info->skb);
 	struct mt76x02_txwi *txwi = txwi_ptr;
-	bool ampdu = IEEE80211_SKB_CB(tx_info->skb)->flags & IEEE80211_TX_CTL_AMPDU;
+	bool ampdu = info->flags & IEEE80211_TX_CTL_AMPDU;
 	int hdrlen, len, pid, qsel = MT_QSEL_EDCA;
 
-	if (qid == MT_TXQ_PSD && wcid && wcid->idx < 128)
+	if (wcid && wcid->idx < MT76x02_N_WCIDS &&
+	    ((info->flags & (IEEE80211_TX_CTL_NO_PS_BUFFER |
+			     IEEE80211_TX_CTL_CLEAR_PS_FILT)) ||
+	     (info->control.flags & IEEE80211_TX_CTRL_PS_RESPONSE)))
 		mt76x02_mac_wcid_set_drop(dev, wcid->idx, false);
 
 	hdrlen = ieee80211_hdrlen(hdr->frame_control);

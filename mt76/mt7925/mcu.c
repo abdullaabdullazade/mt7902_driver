@@ -46,6 +46,17 @@ int mt7925_mcu_parse_response(struct mt76_dev *mdev, int cmd,
 
 		return -ETIMEDOUT;
 	}
+	if ((cmd == MCU_CMD(PATCH_SEM_CONTROL) ||
+	     cmd == MCU_CMD(PATCH_FINISH_REQ) ||
+	     cmd == MCU_CMD(CB_PATCH_SEM_CONTROL) ||
+	     cmd == MCU_CMD(CB_PATCH_FINISH_REQ)) &&
+	    skb->len < sizeof(*rxd) - 4 + sizeof(u8))
+		return -EINVAL;
+	if (cmd != MCU_CMD(PATCH_SEM_CONTROL) &&
+	    cmd != MCU_CMD(PATCH_FINISH_REQ) &&
+	    cmd != MCU_CMD(CB_PATCH_SEM_CONTROL) &&
+	    cmd != MCU_CMD(CB_PATCH_FINISH_REQ) && skb->len < sizeof(*rxd))
+		return -EINVAL;
 
 	rxd = (struct mt7925_mcu_rxd *)skb->data;
 	if (seq != rxd->seq) {
@@ -73,6 +84,9 @@ int mt7925_mcu_parse_response(struct mt76_dev *mdev, int cmd,
 		   cmd == MCU_UNI_CMD(SUSPEND) ||
 		   cmd == MCU_UNI_CMD(NAN)) {
 		struct mt7925_mcu_uni_event *event;
+
+		if (skb->len < sizeof(*rxd) + sizeof(*event))
+			return -EINVAL;
 
 		skb_pull(skb, sizeof(*rxd));
 		event = (struct mt7925_mcu_uni_event *)skb->data;
@@ -113,7 +127,7 @@ int mt7925_mcu_regval(struct mt792x_dev *dev, u32 regidx, u32 *val, bool set)
 		};
 	} __packed * res, req;
 	struct sk_buff *skb;
-	int ret;
+	int len, ret;
 
 	if (u32_get_bits(regidx, MT_RF_REG_HDR) == RF_REG_PREFIX) {
 		req.rf_reg.tag = cpu_to_le16(UNI_CMD_ACCESS_RF_REG_BASIC);
@@ -137,6 +151,17 @@ int mt7925_mcu_regval(struct mt792x_dev *dev, u32 regidx, u32 *val, bool set)
 					&req, sizeof(req), true, &skb);
 	if (ret)
 		return ret;
+
+	len = sizeof(res->__rsv);
+	if (u32_get_bits(regidx, MT_RF_REG_HDR) == RF_REG_PREFIX)
+		len += sizeof(res->rf_reg);
+	else
+		len += sizeof(res->reg);
+
+	if (skb->len < len) {
+		dev_kfree_skb(skb);
+		return -EINVAL;
+	}
 
 	res = (void *)skb->data;
 	if (u32_get_bits(regidx, MT_RF_REG_HDR) == RF_REG_PREFIX)
@@ -732,11 +757,15 @@ mt7925_mcu_uni_rx_unsolicited_event(struct mt792x_dev *dev,
 
 void mt7925_mcu_rx_event(struct mt792x_dev *dev, struct sk_buff *skb)
 {
-	struct mt7925_mcu_rxd *rxd = (struct mt7925_mcu_rxd *)skb->data;
+	struct mt7925_mcu_rxd *rxd;
 
-	if (skb_linearize(skb))
+	if (skb_linearize(skb) ||
+	    skb->len < offsetofend(struct mt7925_mcu_rxd, ext_eid)) {
+		dev_kfree_skb(skb);
 		return;
+	}
 
+	rxd = (struct mt7925_mcu_rxd *)skb->data;
 	if (rxd->option & MCU_UNI_CMD_UNSOLICITED_EVENT) {
 		mt7925_mcu_uni_rx_unsolicited_event(dev, skb);
 		return;
@@ -879,6 +908,10 @@ static int mt7925_mcu_read_eeprom(struct mt792x_dev *dev, u32 offset, u8 *val)
 					&req, sizeof(req), true, &skb);
 	if (ret)
 		return ret;
+	if (skb->len < sizeof(*res)) {
+		dev_kfree_skb(skb);
+		return -EINVAL;
+	}
 
 	res = (struct evt *)skb->data;
 	*val = res->data[offset % MT7925_EEPROM_BLOCK_SIZE];
@@ -895,9 +928,10 @@ static int mt7925_load_clc(struct mt792x_dev *dev, const char *fw_name)
 	const struct mt7925_clc *clc;
 	struct mt76_dev *mdev = &dev->mt76;
 	struct mt792x_phy *phy = &dev->phy;
+	size_t clc_len, len, offset = 0;
 	const struct firmware *fw;
 	u8 *clc_base = NULL, hw_encap = 0;
-	int ret, i, len, offset = 0;
+	int ret, i;
 
 	dev->phy.clc_chan_conf = 0xff;
 	dev->regd_user = false;
@@ -915,7 +949,7 @@ static int mt7925_load_clc(struct mt792x_dev *dev, const char *fw_name)
 	if (ret)
 		return ret;
 
-	if (!fw || !fw->data || fw->size < sizeof(*hdr)) {
+	if (mt76_connac2_fw_check(fw, NULL)) {
 		dev_err(mdev->dev, "Invalid firmware\n");
 		ret = -EINVAL;
 		goto out;
@@ -926,13 +960,6 @@ static int mt7925_load_clc(struct mt792x_dev *dev, const char *fw_name)
 		region = (const void *)((const u8 *)hdr -
 					(hdr->n_region - i) * sizeof(*region));
 		len = le32_to_cpu(region->len);
-
-		/* check if we have valid buffer size */
-		if (offset + len > fw->size) {
-			dev_err(mdev->dev, "Invalid firmware region\n");
-			ret = -EINVAL;
-			goto out;
-		}
 
 		if ((region->feature_set & FW_FEATURE_NON_DL) &&
 		    region->type == FW_TYPE_CLC) {
@@ -945,8 +972,20 @@ static int mt7925_load_clc(struct mt792x_dev *dev, const char *fw_name)
 	if (!clc_base)
 		goto out;
 
-	for (offset = 0; offset < len; offset += le32_to_cpu(clc->len)) {
+	for (offset = 0; offset < len; offset += clc_len) {
+		if (len - offset < sizeof(*clc)) {
+			dev_err(mdev->dev, "Invalid CLC record\n");
+			ret = -EINVAL;
+			goto out;
+		}
+
 		clc = (const struct mt7925_clc *)(clc_base + offset);
+		clc_len = le32_to_cpu(clc->len);
+		if (clc_len < sizeof(*clc) || clc_len > len - offset) {
+			dev_err(mdev->dev, "Invalid CLC record\n");
+			ret = -EINVAL;
+			goto out;
+		}
 
 		if (clc->idx >= ARRAY_SIZE(phy->clc))
 			break;
@@ -962,7 +1001,7 @@ static int mt7925_load_clc(struct mt792x_dev *dev, const char *fw_name)
 			continue;
 
 		phy->clc[clc->idx] = devm_kmemdup(mdev->dev, clc,
-						  le32_to_cpu(clc->len),
+						  clc_len,
 						  GFP_KERNEL);
 
 		if (!phy->clc[clc->idx]) {
@@ -1025,6 +1064,10 @@ int mt7925_mcu_get_temperature(struct mt792x_phy *phy)
 					&req, sizeof(req), true, &skb);
 	if (ret)
 		return ret;
+	if (skb->len < 4 + sizeof(struct tlv) + sizeof(*evt)) {
+		dev_kfree_skb(skb);
+		return -EINVAL;
+	}
 
 	skb_pull(skb, 4 + sizeof(struct tlv));
 	evt = (struct mt7925_thermal_evt *)skb->data;
@@ -1037,7 +1080,7 @@ int mt7925_mcu_get_temperature(struct mt792x_phy *phy)
 }
 
 static void
-mt7925_mcu_parse_phy_cap(struct mt792x_dev *dev, char *data)
+mt7925_mcu_parse_phy_cap(struct mt792x_dev *dev, char *data, int len)
 {
 	struct mt76_phy *mphy = &dev->mt76.phy;
 	struct mt76_dev *mdev = mphy->dev;
@@ -1061,6 +1104,9 @@ mt7925_mcu_parse_phy_cap(struct mt792x_dev *dev, char *data)
 		WF0_5G
 	};
 
+	if (len < offsetofend(struct mt7925_mcu_phy_cap, hw_path))
+		return;
+
 	cap = (struct mt7925_mcu_phy_cap *)data;
 
 	mdev->phy.antenna_mask = BIT(cap->nss) - 1;
@@ -1070,13 +1116,16 @@ mt7925_mcu_parse_phy_cap(struct mt792x_dev *dev, char *data)
 }
 
 static void
-mt7925_mcu_parse_eml_cap(struct mt792x_dev *dev, char *data)
+mt7925_mcu_parse_eml_cap(struct mt792x_dev *dev, char *data, int len)
 {
 	struct mt7925_mcu_eml_cap {
 		u8 rsv[4];
 		__le16 eml_cap;
 		u8 rsv2[6];
 	} __packed * cap;
+
+	if (len < offsetofend(struct mt7925_mcu_eml_cap, eml_cap))
+		return;
 
 	cap = (struct mt7925_mcu_eml_cap *)data;
 
@@ -1118,30 +1167,35 @@ mt7925_mcu_get_nic_capability(struct mt792x_dev *dev)
 
 	for (i = 0; i < le16_to_cpu(hdr->n_element); i++) {
 		struct tlv *tlv = (struct tlv *)skb->data;
-		int len;
+		int len, data_len;
 
 		if (skb->len < sizeof(*tlv))
 			break;
 
 		len = le16_to_cpu(tlv->len);
-		if (skb->len < len)
+		if (len < sizeof(*tlv) || skb->len < len)
 			break;
 
+		data_len = len - sizeof(*tlv);
 		switch (le16_to_cpu(tlv->tag)) {
 		case MT_NIC_CAP_6G:
-			mphy->cap.has_6ghz = !!tlv->data[0];
+			if (data_len)
+				mphy->cap.has_6ghz = !!tlv->data[0];
 			break;
 		case MT_NIC_CAP_MAC_ADDR:
-			memcpy(mphy->macaddr, (void *)tlv->data, ETH_ALEN);
+			if (data_len >= ETH_ALEN)
+				memcpy(mphy->macaddr, (void *)tlv->data, ETH_ALEN);
 			break;
 		case MT_NIC_CAP_PHY:
-			mt7925_mcu_parse_phy_cap(dev, tlv->data);
+			mt7925_mcu_parse_phy_cap(dev, tlv->data, data_len);
 			break;
 		case MT_NIC_CAP_CHIP_CAP:
-			dev->phy.chip_cap = le64_to_cpu(*(__le64 *)tlv->data);
+			if (data_len >= sizeof(__le64))
+				dev->phy.chip_cap =
+					le64_to_cpu(*(__le64 *)tlv->data);
 			break;
 		case MT_NIC_CAP_EML_CAP:
-			mt7925_mcu_parse_eml_cap(dev, tlv->data);
+			mt7925_mcu_parse_eml_cap(dev, tlv->data, data_len);
 			break;
 		default:
 			break;
@@ -1210,6 +1264,8 @@ EXPORT_SYMBOL_GPL(mt7925_mcu_set_thermal_protect);
 int mt7925_run_firmware(struct mt792x_dev *dev)
 {
 	int err;
+
+	dev->led_state = -1;
 
 	err = mt792x_load_firmware(dev);
 	if (err)
@@ -2309,6 +2365,10 @@ int mt7925_get_txpwr_info(struct mt792x_dev *dev, u8 band_idx, struct mt7925_txp
 					&req, sizeof(req), true, &skb);
 	if (ret)
 		return ret;
+	if (skb->len < sizeof(*event)) {
+		dev_kfree_skb(skb);
+		return -EINVAL;
+	}
 
 	event = (struct mt7925_txpwr_event *)skb->data;
 	memcpy(txpwr, &event->txpwr, sizeof(event->txpwr));
@@ -4162,6 +4222,10 @@ int mt7925_mcu_wf_rf_pin_ctrl(struct mt792x_phy *phy)
 					&req, sizeof(req), true, &skb);
 	if (ret)
 		return ret;
+	if (skb->len < sizeof(struct tlv) + sizeof(*status)) {
+		dev_kfree_skb(skb);
+		return -EINVAL;
+	}
 
 	skb_pull(skb, sizeof(struct tlv));
 	status = (struct mt7925_radio_status_event *)skb->data;

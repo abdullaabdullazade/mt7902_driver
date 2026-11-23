@@ -193,13 +193,21 @@ static const struct cfg80211_sar_capa mt76_sar_capa = {
 	.freq_ranges = &mt76_sar_freq_ranges[0],
 };
 
+static bool mt76_led_has_ops(struct mt76_phy *phy)
+{
+	struct led_classdev *cdev = &phy->leds.cdev;
+
+	return cdev->brightness_set || cdev->brightness_set_blocking ||
+	       cdev->blink_set;
+}
+
 static int mt76_led_init(struct mt76_phy *phy)
 {
 	struct mt76_dev *dev = phy->dev;
 	struct ieee80211_hw *hw = phy->hw;
 	struct device_node *np = dev->dev->of_node;
 
-	if (!phy->leds.cdev.brightness_set && !phy->leds.cdev.blink_set)
+	if (!mt76_led_has_ops(phy))
 		return 0;
 
 	np = of_get_child_by_name(np, "led");
@@ -242,7 +250,7 @@ static int mt76_led_init(struct mt76_phy *phy)
 
 static void mt76_led_cleanup(struct mt76_phy *phy)
 {
-	if (!phy->leds.cdev.brightness_set && !phy->leds.cdev.blink_set)
+	if (!mt76_led_has_ops(phy))
 		return;
 
 	led_classdev_unregister(&phy->leds.cdev);
@@ -875,16 +883,11 @@ struct mt76_phy *mt76_vif_phy(struct ieee80211_hw *hw,
 			      struct ieee80211_vif *vif)
 {
 	struct mt76_vif_link *mlink = (struct mt76_vif_link *)vif->drv_priv;
-	struct mt76_chanctx *ctx;
 
 	if (!hw->wiphy->n_radio)
 		return hw->priv;
 
-	if (!mlink->ctx)
-		return NULL;
-
-	ctx = (struct mt76_chanctx *)mlink->ctx->drv_priv;
-	return ctx->phy;
+	return mt76_vif_link_phy(mlink);
 }
 EXPORT_SYMBOL_GPL(mt76_vif_phy);
 
@@ -1213,15 +1216,9 @@ void mt76_wcid_key_setup(struct mt76_dev *dev, struct mt76_wcid *wcid,
 	struct ieee80211_key_seq seq;
 	int i;
 
-	wcid->rx_check_pn = false;
-
-	if (!key)
+	mt76_wcid_key_link_setup(wcid, key);
+	if (!wcid->rx_check_pn)
 		return;
-
-	if (key->cipher != WLAN_CIPHER_SUITE_CCMP)
-		return;
-
-	wcid->rx_check_pn = true;
 
 	/* data frame */
 	for (i = 0; i < IEEE80211_NUM_TIDS; i++) {
@@ -1265,14 +1262,22 @@ int mt76_rx_signal(u8 chain_mask, s8 *chain_signal)
 }
 EXPORT_SYMBOL(mt76_rx_signal);
 
+/* compat: the receive API moved to link stations in kernel 7.4 */
 static void
 mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
 		struct ieee80211_hw **hw,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+		struct ieee80211_link_sta **link_sta)
+#else
 		struct ieee80211_sta **sta)
+#endif
 {
 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
 	struct ieee80211_hdr *hdr = mt76_skb_get_hdr(skb);
 	struct mt76_rx_status mstat;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	struct ieee80211_sta *sta;
+#endif
 
 	mstat = *((struct mt76_rx_status *)skb->cb);
 	memset(status, 0, sizeof(*status));
@@ -1313,12 +1318,22 @@ mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
 	memcpy(status->chain_signal, mstat.chain_signal,
 	       sizeof(mstat.chain_signal));
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	sta = wcid_to_sta(mstat.wcid);
+	if (!sta)
+		*link_sta = NULL;
+	else if (mstat.wcid->link_valid)
+		*link_sta = rcu_dereference(sta->link[mstat.wcid->link_id]);
+	else
+		*link_sta = &sta->deflink;
+#else
 	if (mstat.wcid) {
 		status->link_valid = mstat.wcid->link_valid;
 		status->link_id = mstat.wcid->link_id;
 	}
 
 	*sta = wcid_to_sta(mstat.wcid);
+#endif
 	*hw = mt76_phy_hw(dev, mstat.phy_idx);
 }
 
@@ -1328,6 +1343,7 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
 	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
 	struct mt76_wcid *wcid = status->wcid;
 	struct ieee80211_hdr *hdr;
+	struct mt76_wcid *pn_wcid;
 	int security_idx;
 	int ret;
 
@@ -1339,6 +1355,9 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
 
 	if (!wcid || !wcid->rx_check_pn)
 		return;
+
+	/* the links of an MLD peer share one PN space per key */
+	pn_wcid = mt76_wcid_primary(wcid);
 
 	security_idx = status->qos_ctl & IEEE80211_QOS_CTL_TID_MASK;
 	if (status->flag & RX_FLAG_8023)
@@ -1367,14 +1386,14 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
 
 skip_hdr_check:
 	BUILD_BUG_ON(sizeof(status->iv) != sizeof(wcid->rx_key_pn[0]));
-	ret = memcmp(status->iv, wcid->rx_key_pn[security_idx],
+	ret = memcmp(status->iv, pn_wcid->rx_key_pn[security_idx],
 		     sizeof(status->iv));
 	if (ret <= 0) {
 		status->flag |= RX_FLAG_ONLY_MONITOR;
 		return;
 	}
 
-	memcpy(wcid->rx_key_pn[security_idx], status->iv, sizeof(status->iv));
+	memcpy(pn_wcid->rx_key_pn[security_idx], status->iv, sizeof(status->iv));
 
 	if (status->flag & RX_FLAG_IV_STRIPPED)
 		status->flag |= RX_FLAG_PN_VALIDATED;
@@ -1544,7 +1563,12 @@ mt76_check_sta(struct mt76_dev *dev, struct sk_buff *skb)
 void mt76_rx_complete(struct mt76_dev *dev, struct sk_buff_head *frames,
 		      struct napi_struct *napi)
 {
+/* compat: the receive API moved to link stations in kernel 7.4 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+	struct ieee80211_link_sta *sta;
+#else
 	struct ieee80211_sta *sta;
+#endif
 	struct ieee80211_hw *hw;
 	struct sk_buff *skb, *tmp;
 	LIST_HEAD(list);
@@ -1609,11 +1633,14 @@ mt76_sta_add(struct mt76_phy *phy, struct ieee80211_vif *vif,
 	struct mt76_wcid *wcid = (struct mt76_wcid *)sta->drv_priv;
 	struct mt76_dev *dev = phy->dev;
 	struct mt76_wcid *published;
+	bool registered;
 	int ret;
 	int i;
 
 	mutex_lock(&dev->mutex);
 
+	/* drv_priv of a new station is zeroed, so only a replay has it set */
+	registered = wcid->sta;
 	ret = dev->drv->sta_add(dev, vif, sta);
 	if (ret)
 		goto out;
@@ -1639,7 +1666,8 @@ mt76_sta_add(struct mt76_phy *phy, struct ieee80211_vif *vif,
 		wcid->phy_idx = phy->band_idx;
 	}
 
-	phy->num_sta++;
+	if (!registered)
+		phy->num_sta++;
 
 out:
 	mutex_unlock(&dev->mutex);
@@ -2251,7 +2279,7 @@ mt76_offchannel_notify_iter(void *_data, u8 *mac, struct ieee80211_vif *vif)
 
 	if (!ieee80211_vif_is_mld(vif)) {
 		if (mt76_vif_link_phy(mlink) == data->phy) {
-			if (!data->offchannel && mlink->beacon_mon_interval)
+			if (!data->offchannel && READ_ONCE(mlink->beacon_mon_interval))
 				WRITE_ONCE(mlink->beacon_mon_last, jiffies);
 			mt76_offchannel_send_nullfunc(data, vif, -1);
 		}
@@ -2268,7 +2296,7 @@ mt76_offchannel_notify_iter(void *_data, u8 *mac, struct ieee80211_vif *vif)
 		if (mt76_vif_link_phy(mlink) != data->phy)
 			continue;
 
-		if (!data->offchannel && mlink->beacon_mon_interval)
+		if (!data->offchannel && READ_ONCE(mlink->beacon_mon_interval))
 			WRITE_ONCE(mlink->beacon_mon_last, jiffies);
 
 		mt76_offchannel_send_nullfunc(data, vif, link_id);
@@ -2316,7 +2344,7 @@ static void mt76_rx_beacon_iter(void *_data, u8 *mac,
 			mlink = (struct mt76_vif_link *)vif->drv_priv;
 		else
 			mlink = rcu_dereference(mvif->link[link_id]);
-		if (!mlink || !mlink->beacon_mon_interval)
+		if (!mlink || !READ_ONCE(mlink->beacon_mon_interval))
 			continue;
 
 		if (mt76_vif_link_phy(mlink) != data->phy)
@@ -2371,11 +2399,20 @@ static void mt76_beacon_mon_iter(void *data, u8 *mac,
 		return;
 
 	for (link_id = 0; link_id < IEEE80211_MLD_MAX_NUM_LINKS; link_id++) {
+		u16 interval;
+
 		if (link_id == mvif->deflink_id)
 			mlink = (struct mt76_vif_link *)vif->drv_priv;
 		else
 			mlink = rcu_dereference(mvif->link[link_id]);
-		if (!mlink || !mlink->beacon_mon_interval)
+		if (!mlink)
+			continue;
+
+		/* pairs with smp_store_release() in
+		 * mt76_vif_link_beacon_mon_start()
+		 */
+		interval = smp_load_acquire(&mlink->beacon_mon_interval);
+		if (!interval)
 			continue;
 
 		if (mt76_vif_link_phy(mlink) != phy)
@@ -2383,7 +2420,7 @@ static void mt76_beacon_mon_iter(void *data, u8 *mac,
 
 		if (time_after(jiffies,
 			       READ_ONCE(mlink->beacon_mon_last) +
-			       MT76_BEACON_MON_MAX_MISS * mlink->beacon_mon_interval))
+			       MT76_BEACON_MON_MAX_MISS * interval))
 			ieee80211_beacon_loss(vif);
 	}
 }

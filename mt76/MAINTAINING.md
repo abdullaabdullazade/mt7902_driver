@@ -48,6 +48,34 @@ Without that pull, main on your machine is still sitting where it was before and
 
 Now and then you've got a fix that isn't ready to merge but you want one person to try it, a reporter on the exact adapter that's failing, say. Push it as a branch and point them at it so they can clone that branch and install, or build it and send them the module directly. It stays off main until their result says it's good.
 
+## Asking someone to test
+
+Use the same words every time, so a tester knows what is coming and what to send back, and so we all ask for the same things. Fill in the name, the branch and the one line on what to do, and post it as is:
+
+    @<reporter> Would you try this on your adapter when you get a chance? TESTING.md at the top of the repo has the four steps. The fix is on branch `<branch>`:
+
+        git clone https://github.com/morrownr/mt76.git
+        cd mt76
+        git checkout <branch>
+        sudo sh install-driver.sh
+
+    If you already have the mt76 folder, skip the first line and run `git pull` once you are in it.
+
+    Reboot, then <what to do, in one line>.
+
+    Afterwards, please paste these back, whole:
+
+    1. `./check-driver.sh 2>&1 | tee mt76-diag.txt`, all of it
+    2. `sudo dmesg | grep -i mt7`, all of it
+    3. a few lines on what you did, how long it ran and what happened
+    4. if the installer stopped with an error, everything it printed
+
+    So you know what you'd be posting: the first shows your adapter, the driver in use and the link, network name included. The second shows only the kernel's own lines about the adapter.
+
+    Thanks for giving it a try.
+
+If the fix is already on main, write "The fix is on main now:" in place of the branch sentence and leave out the checkout line.
+
 ## Pulling a commit from openwrt/mt76
 
 Most of the real driver work comes from here. Point git at openwrt once, find the commit you want, copy it onto our tree, build-test it, push.

@@ -377,12 +377,13 @@ static void mt76x02_key_sync(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			     struct ieee80211_key_conf *key, void *data)
 {
 	struct mt76x02_dev *dev = hw->priv;
+	struct mt76x02_vif *mvif = (struct mt76x02_vif *)vif->drv_priv;
 	struct mt76_wcid *wcid;
 
-	if (!sta)
-		return;
-
-	wcid = (struct mt76_wcid *)sta->drv_priv;
+	if (sta)
+		wcid = (struct mt76_wcid *)sta->drv_priv;
+	else
+		wcid = &mvif->group_wcid;
 
 	if (wcid->hw_key_idx != key->keyidx || wcid->sw_iv)
 		return;
@@ -403,11 +404,9 @@ static void mt76x02_reset_state(struct mt76x02_dev *dev)
 	rcu_read_unlock();
 
 	for (i = 0; i < MT76x02_N_WCIDS; i++) {
-		struct ieee80211_sta *sta;
-		struct ieee80211_vif *vif;
 		struct mt76x02_sta *msta;
 		struct mt76_wcid *wcid;
-		void *priv;
+		int tid;
 
 		wcid = rcu_dereference_protected(dev->mt76.wcid[i],
 					lockdep_is_held(&dev->mt76.mutex));
@@ -416,14 +415,16 @@ static void mt76x02_reset_state(struct mt76x02_dev *dev)
 
 		rcu_assign_pointer(dev->mt76.wcid[i], NULL);
 
-		priv = msta = container_of(wcid, struct mt76x02_sta, wcid);
-		sta = container_of(priv, struct ieee80211_sta, drv_priv);
+		for (tid = 0; tid < ARRAY_SIZE(wcid->aggr); tid++)
+			mt76_rx_aggr_stop(&dev->mt76, wcid, tid);
 
-		priv = msta->vif;
-		vif = container_of(priv, struct ieee80211_vif, drv_priv);
+		mt76x02_mac_wcid_set_drop(dev, wcid->idx, true);
+		mt76x02_mac_wcid_setup(dev, wcid->idx, 0, NULL);
+		mt76_wcid_cleanup(&dev->mt76, wcid);
 
-		__mt76_sta_remove(&dev->mphy, vif, sta);
-		memset(msta, 0, sizeof(*msta));
+		msta = container_of(wcid, struct mt76x02_sta, wcid);
+		memset(&msta->status, 0, sizeof(msta->status));
+		msta->n_frames = 0;
 	}
 
 	dev->mt76.vif_mask = 0;

@@ -98,6 +98,10 @@ mt7921_tm_query(struct mt792x_dev *dev, struct mt7921_tm_cmd *req,
 					&cmd, sizeof(cmd), true, &skb);
 	if (ret)
 		goto out;
+	if (skb->len < sizeof(*evt)) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	evt = (struct mt7921_rftest_evt *)skb->data;
 	evt_resp->param0 = le32_to_cpu(evt->param0);
@@ -117,7 +121,7 @@ int mt7921_testmode_cmd(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	int err;
 
 	if (!test_bit(MT76_STATE_RUNNING, &mphy->state) ||
-	    !(hw->conf.flags & IEEE80211_CONF_MONITOR))
+	    !mt792x_monitor_active(phy->dev))
 		return -ENOTCONN;
 
 	err = nla_parse_deprecated(tb, MT76_TM_ATTR_MAX, data, len,
@@ -154,7 +158,7 @@ int mt7921_testmode_dump(struct ieee80211_hw *hw, struct sk_buff *msg,
 	int err;
 
 	if (!test_bit(MT76_STATE_RUNNING, &mphy->state) ||
-	    !(hw->conf.flags & IEEE80211_CONF_MONITOR) ||
+	    !mt792x_monitor_active(phy->dev) ||
 	    !mt76_testmode_enabled(mphy))
 		return -ENOTCONN;
 

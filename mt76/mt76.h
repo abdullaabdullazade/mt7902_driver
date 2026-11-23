@@ -1579,6 +1579,13 @@ int mt76_rx_aggr_start(struct mt76_dev *dev, struct mt76_wcid *wcid, u8 tid,
 		       u16 ssn, u16 size);
 void mt76_rx_aggr_stop(struct mt76_dev *dev, struct mt76_wcid *wcid, u8 tid);
 
+static inline void
+mt76_wcid_key_link_setup(struct mt76_wcid *wcid,
+			 struct ieee80211_key_conf *key)
+{
+	wcid->rx_check_pn = key && key->cipher == WLAN_CIPHER_SUITE_CCMP;
+}
+
 void mt76_wcid_key_setup(struct mt76_dev *dev, struct mt76_wcid *wcid,
 			 struct ieee80211_key_conf *key);
 
@@ -2183,15 +2190,45 @@ mt76_vif_conf_link(struct mt76_dev *dev, struct ieee80211_vif *vif,
 	return mt76_dereference(mvif->link[link_conf->link_id], dev);
 }
 
+static inline void
+mt76_vif_link_ctx_set(struct mt76_vif_link *mlink,
+		      struct ieee80211_chanctx_conf *conf)
+{
+	if (conf && mlink->beacon_mon_interval)
+		WRITE_ONCE(mlink->beacon_mon_last, jiffies);
+
+	/* pairs with smp_load_acquire() in mt76_vif_link_phy() */
+	smp_store_release(&mlink->ctx, conf);
+}
+
+static inline void
+mt76_vif_link_beacon_mon_start(struct mt76_vif_link *mlink, u16 beacon_int)
+{
+	u16 interval = msecs_to_jiffies(ieee80211_tu_to_usec(beacon_int) / 1000);
+
+	WRITE_ONCE(mlink->beacon_mon_last, jiffies);
+	/* pairs with smp_load_acquire() in mt76_beacon_mon_iter() */
+	smp_store_release(&mlink->beacon_mon_interval, interval);
+}
+
+static inline void
+mt76_vif_link_beacon_mon_stop(struct mt76_vif_link *mlink)
+{
+	WRITE_ONCE(mlink->beacon_mon_interval, 0);
+}
+
 static inline struct mt76_phy *
 mt76_vif_link_phy(struct mt76_vif_link *mlink)
 {
+	struct ieee80211_chanctx_conf *conf;
 	struct mt76_chanctx *ctx;
 
-	if (!mlink->ctx)
+	/* pairs with smp_store_release() in mt76_vif_link_ctx_set() */
+	conf = smp_load_acquire(&mlink->ctx);
+	if (!conf)
 		return NULL;
 
-	ctx = (struct mt76_chanctx *)mlink->ctx->drv_priv;
+	ctx = (struct mt76_chanctx *)conf->drv_priv;
 
 	return ctx->phy;
 }
